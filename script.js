@@ -1,8 +1,9 @@
 // ===========================
 // 3D AI Agentic Twin — Script
-// Triangle layout + labeled warehouses + roads + oriented truck movement
+// Triangle layout + labeled warehouses (off-road) + triangle roads
+// Real truck models + orientation + wheel spin
+// Continuous ping-pong movement with CURVED TURNS (Bezier smoothing)
 // Continuous narrated commentary (text + human-like TTS w/ FIFO queue)
-// Real truck models with wheel spin
 // ===========================
 
 // ============ Scene setup ============
@@ -149,7 +150,7 @@ const LABELS = new THREE.Group();
 scene.add(LABELS);
 
 // Text sprite label (kept off roads, always on top)
-function makeTextSprite(text, opacity = 0.85) {
+function makeTextSprite(text, opacity = 0.82) {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
   const fontSize = 28;
@@ -209,19 +210,29 @@ function buildLabels() {
     (WH_POS.WH1.z + WH_POS.WH2.z + WH_POS.WH3.z) / 3
   );
 
-  function placeLabel(text, basePos, pushOut = 4.5) {
-    const dir = new THREE.Vector3().subVectors(basePos, centroid).setY(0);
-    if (dir.lengthSq() < 1e-6) dir.set(1, 0, 0);
-    dir.normalize().multiplyScalar(pushOut);
+  // place label pushed outward; optional angleOffset (radians) to avoid sitting on a road line
+  function placeLabel(text, basePos, pushOut = 6.5, angleOffset = 0) {
+    const fromCenter = new THREE.Vector3().subVectors(basePos, centroid).setY(0);
+    if (fromCenter.lengthSq() < 1e-6) fromCenter.set(1, 0, 0);
+    // rotate around Y for a slight angular offset when needed
+    const dir = fromCenter.clone().normalize();
+    if (angleOffset !== 0) {
+      const c = Math.cos(angleOffset), s = Math.sin(angleOffset);
+      const x = dir.x, z = dir.z;
+      dir.x = x * c - z * s;
+      dir.z = x * s + z * c;
+    }
+    dir.multiplyScalar(pushOut);
     const pos = new THREE.Vector3().copy(basePos).add(dir);
-    const spr = makeTextSprite(text, 0.82);
+    const spr = makeTextSprite(text, 0.8);
     spr.position.set(pos.x, basePos.y + offsetY, pos.z);
     return spr;
   }
 
-  LABELS.add(placeLabel("WH1 — Delhi",     WH_POS.WH1));
-  LABELS.add(placeLabel("WH2 — Mumbai",    WH_POS.WH2));
-  LABELS.add(placeLabel("WH3 — Bangalore", WH_POS.WH3, 5.5)); // push WH3 a touch more
+  LABELS.add(placeLabel("WH1 — Delhi",     WH_POS.WH1, 6.5,  0.10));
+  LABELS.add(placeLabel("WH2 — Mumbai",    WH_POS.WH2, 6.5, -0.10));
+  // WH3 gets an extra push and a small angular offset so it never sits on the WH3 road
+  LABELS.add(placeLabel("WH3 — Bangalore", WH_POS.WH3, 8.0,  0.20));
 }
 
 function buildRoads() {
@@ -242,15 +253,16 @@ function createRoad(a, b) {
 }
 
 // =====================================================
-// Truck movement (on roads) + orientation + wheel spin
+// Truck movement (curved turns) + orientation + wheel spin
 // - Full triangle graph (all edges available)
 // - Explicit reroutes honored via JSON path
+// - Continuous ping-pong motion along a SMOOTHED path
 // =====================================================
 const trucksGroup = new THREE.Group();
 scene.add(trucksGroup);
 
 // State per moving truck
-let movingTrucks = []; // [{id, mesh, wheels[], path:[Vector3], segIdx, segT, speed, wheelRadius, lastPos}]
+let movingTrucks = []; // [{id, mesh, wheels[], path:[Vector3], segIdx, segT, direction, speed, wheelRadius, lastPos}]
 
 const matGreen = new THREE.MeshLambertMaterial({ color: 0x00b050 });
 const matRed   = new THREE.MeshLambertMaterial({ color: 0xff4444 });
@@ -282,6 +294,64 @@ function idsToPoints(ids) {
     pts.push(new THREE.Vector3(pos.x, 0, pos.z));
   }
   return pts;
+}
+
+// ---- Bezier smoothing (rounded corners) ----
+// Given base waypoints, returns a densified list with quadratic Bezier corners.
+// radiusLimit controls how far we cut into each segment near corners.
+// samplesPerCorner controls smoothness of each rounded turn.
+function smoothPath(basePts, radiusLimit = 2.2, samplesPerCorner = 8) {
+  if (!basePts || basePts.length < 2) return basePts || [];
+  const out = [];
+  out.push(basePts[0].clone()); // start
+
+  for (let i = 1; i < basePts.length - 1; i++) {
+    const p0 = basePts[i - 1];
+    const p1 = basePts[i];
+    const p2 = basePts[i + 1];
+
+    const vIn  = new THREE.Vector3().subVectors(p1, p0);
+    const vOut = new THREE.Vector3().subVectors(p2, p1);
+
+    const lenIn  = vIn.length();
+    const lenOut = vOut.length();
+    if (lenIn < 1e-6 || lenOut < 1e-6) {
+      out.push(p1.clone());
+      continue;
+    }
+    vIn.normalize();
+    vOut.normalize();
+
+    // how much to "cut" near the corner; keep below 40% of segment length
+    const cut = Math.min(radiusLimit, 0.4 * Math.min(lenIn, lenOut));
+
+    const pIn  = new THREE.Vector3().copy(p1).addScaledVector(vIn,  -cut);
+    const pOut = new THREE.Vector3().copy(p1).addScaledVector(vOut,  cut);
+
+    // straight from previous point to pIn (unless duplicate)
+    const prev = out[out.length - 1];
+    if (!prev.equals(pIn)) out.push(pIn);
+
+    // quadratic Bezier from pIn -> p1 -> pOut, sample interior points
+    for (let s = 1; s < samplesPerCorner; s++) {
+      const t = s / samplesPerCorner;
+      // B(t) = (1-t)^2 * pIn + 2(1-t)t * p1 + t^2 * pOut
+      const a = (1 - t) * (1 - t);
+      const b = 2 * (1 - t) * t;
+      const c = t * t;
+      const q = new THREE.Vector3(
+        a * pIn.x + b * p1.x + c * pOut.x,
+        0,
+        a * pIn.z + b * p1.z + c * pOut.z
+      );
+      out.push(q);
+    }
+
+    out.push(pOut);
+  }
+
+  out.push(basePts[basePts.length - 1].clone()); // end
+  return out;
 }
 
 // Real truck model (cab + cargo + 6 wheels)
@@ -330,6 +400,7 @@ function createTruckMesh(delayed) {
   return group;
 }
 
+// Spawn a moving truck with a SMOOTH path
 function spawnMovingTruck(truck, rerouteMap) {
   const delayed = (truck.status && String(truck.status).toLowerCase() === 'delayed') ||
                   (truck.delay_hours || 0) > 0;
@@ -346,11 +417,15 @@ function spawnMovingTruck(truck, rerouteMap) {
   const last = pathIDs[pathIDs.length - 1];
   if (last !== truck.destination) pathIDs.push(truck.destination);
 
-  const pathPts = idsToPoints(pathIDs);
-  if (pathPts.length < 1) return;
+  // base polyline from warehouse centers
+  const basePath = idsToPoints(pathIDs);
+
+  // smooth corners (rounded turns)
+  const smoothPts = smoothPath(basePath, 2.2, 8);
+  if (smoothPts.length < 2) return;
 
   const mesh = createTruckMesh(delayed);
-  mesh.position.copy(pathPts[0]);
+  mesh.position.copy(smoothPts[0]);
   trucksGroup.add(mesh);
 
   const SPEED = delayed ? 2.0 : 3.2; // units/sec; delayed slightly slower
@@ -359,12 +434,13 @@ function spawnMovingTruck(truck, rerouteMap) {
     id: truck.id,
     mesh,
     wheels: mesh.userData.wheels || [],
-    path: pathPts,
-    segIdx: 0,
-    segT: 0,
+    path: smoothPts,      // densified smooth path
+    segIdx: 0,            // segment start index
+    segT: 0,              // 0..1 along current segment
+    direction: 1,         // +1 forward, -1 backward (ping-pong)
     speed: SPEED,
     wheelRadius: mesh.userData.wheelRadius || 0.28,
-    lastPos: pathPts[0].clone()
+    lastPos: smoothPts[0].clone()
   });
 }
 
@@ -436,8 +512,16 @@ function updateMovingTrucks(dt) {
     const pts = t.path;
     if (!pts || pts.length < 2) continue;
 
+    // Segment endpoints according to direction
     let a = pts[t.segIdx];
-    let b = pts[t.segIdx + 1];
+    let b = pts[t.segIdx + t.direction];
+
+    // If next index would go out of bounds, flip direction (ping-pong)
+    if (!b) {
+      t.direction *= -1;
+      b = pts[t.segIdx + t.direction];
+      if (!b) continue; // safety
+    }
 
     const segLen = Math.max(0.0001, a.distanceTo(b));
     const distThisFrame = t.speed * dt;
@@ -445,22 +529,27 @@ function updateMovingTrucks(dt) {
     t.segT += dT;
 
     if (t.segT >= 1) {
-      t.segIdx++;
-      if (t.segIdx >= pts.length - 1) {
-        // Arrived at final waypoint
-        t.mesh.position.copy(pts[pts.length - 1]);
-        continue;
-      } else {
-        t.segT = t.segT - 1; // carry over extra progress
-        a = pts[t.segIdx];
-        b = pts[t.segIdx + 1];
+      // advance to next segment in current direction
+      t.segIdx += t.direction;
+      t.segT -= 1;
+
+      // flip at ends and clamp indices
+      if (t.segIdx <= 0) {
+        t.segIdx = 0;
+        t.direction = 1;
+      } else if (t.segIdx >= pts.length - 1) {
+        t.segIdx = pts.length - 1;
+        t.direction = -1;
       }
+
+      a = pts[t.segIdx];
+      b = pts[t.segIdx + t.direction] || a;
     }
 
     const pos = new THREE.Vector3().lerpVectors(a, b, t.segT);
     t.mesh.position.copy(pos);
 
-    // Face movement direction (shows turning at junctions)
+    // Orient along tangent (smooth heading through curves)
     tmpDir.subVectors(b, a).normalize();
     const target = new THREE.Vector3().addVectors(pos, tmpDir);
     t.mesh.lookAt(target);
@@ -470,7 +559,6 @@ function updateMovingTrucks(dt) {
     if (t.wheels && t.wheels.length && t.wheelRadius > 0) {
       const angle = deltaDist / t.wheelRadius; // radians
       for (const w of t.wheels) {
-        // wheels rotate around their axle (X axis after z-rotation applied)
         w.rotation.x -= angle; // negative to match forward motion
       }
     }
