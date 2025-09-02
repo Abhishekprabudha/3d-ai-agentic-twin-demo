@@ -2,6 +2,7 @@
 // 3D AI Agentic Twin — Script
 // Triangle layout + labeled warehouses + roads + oriented truck movement
 // Continuous narrated commentary (text + human-like TTS w/ FIFO queue)
+// Real truck models with wheel spin
 // ===========================
 
 // ============ Scene setup ============
@@ -147,30 +148,35 @@ const textureLoader = new THREE.TextureLoader();
 const LABELS = new THREE.Group();
 scene.add(LABELS);
 
-// Simple text sprite label
-function makeTextSprite(text) {
+// Text sprite label (kept off roads, always on top)
+function makeTextSprite(text, opacity = 0.85) {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
   const fontSize = 28;
-  const pad = 16;
+  const pad = 18;
   ctx.font = `bold ${fontSize}px system-ui, Segoe UI, Roboto, sans-serif`;
-  const w = ctx.measureText(text).width + pad * 2;
-  const h = fontSize + pad * 2;
+  const w = Math.ceil(ctx.measureText(text).width + pad * 2);
+  const h = Math.ceil(fontSize + pad * 2);
   canvas.width = w;
   canvas.height = h;
+
   ctx.font = `bold ${fontSize}px system-ui, Segoe UI, Roboto, sans-serif`;
-  ctx.fillStyle = "rgba(10,10,11,0.8)";
+  ctx.fillStyle = `rgba(10,10,11,${opacity})`;
   ctx.fillRect(0, 0, w, h);
   ctx.strokeStyle = "rgba(255,255,255,0.25)";
   ctx.strokeRect(0, 0, w, h);
   ctx.fillStyle = "#e6e6e6";
   ctx.textBaseline = "middle";
   ctx.fillText(text, pad, h / 2);
+
   const tex = new THREE.CanvasTexture(canvas);
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+  const mat = new THREE.SpriteMaterial({
+    map: tex, transparent: true, depthTest: false
+  });
   const spr = new THREE.Sprite(mat);
-  const scale = 0.08; // tune size
+  const scale = 0.08;
   spr.scale.set(w * scale, h * scale, 1);
+  spr.renderOrder = 999;
   return spr;
 }
 
@@ -194,46 +200,60 @@ function buildWarehouses() {
 }
 function buildLabels() {
   LABELS.clear();
-  const offsetY = 3.8;
-  const labels = [
-    ["WH1 — Delhi", WH_POS.WH1],
-    ["WH2 — Mumbai", WH_POS.WH2],
-    ["WH3 — Bangalore", WH_POS.WH3]
-  ];
-  for (const [text, pos] of labels) {
-    const spr = makeTextSprite(text);
-    spr.position.set(pos.x, pos.y + offsetY, pos.z);
-    LABELS.add(spr);
+  const offsetY = 4.2;
+
+  // triangle centroid
+  const centroid = new THREE.Vector3(
+    (WH_POS.WH1.x + WH_POS.WH2.x + WH_POS.WH3.x) / 3,
+    0,
+    (WH_POS.WH1.z + WH_POS.WH2.z + WH_POS.WH3.z) / 3
+  );
+
+  function placeLabel(text, basePos, pushOut = 4.5) {
+    const dir = new THREE.Vector3().subVectors(basePos, centroid).setY(0);
+    if (dir.lengthSq() < 1e-6) dir.set(1, 0, 0);
+    dir.normalize().multiplyScalar(pushOut);
+    const pos = new THREE.Vector3().copy(basePos).add(dir);
+    const spr = makeTextSprite(text, 0.82);
+    spr.position.set(pos.x, basePos.y + offsetY, pos.z);
+    return spr;
   }
+
+  LABELS.add(placeLabel("WH1 — Delhi",     WH_POS.WH1));
+  LABELS.add(placeLabel("WH2 — Mumbai",    WH_POS.WH2));
+  LABELS.add(placeLabel("WH3 — Bangalore", WH_POS.WH3, 5.5)); // push WH3 a touch more
 }
+
 function buildRoads() {
-  // draw triangle edges: WH1–WH2, WH2–WH3, WH3–WH1
+  // triangle edges: WH1–WH2, WH2–WH3, WH3–WH1
   createRoad(WH_POS.WH1, WH_POS.WH2);
   createRoad(WH_POS.WH2, WH_POS.WH3);
   createRoad(WH_POS.WH3, WH_POS.WH1);
 }
 function createRoad(a, b) {
-  const material = new THREE.LineBasicMaterial({ color: 0x606060, linewidth: 2 });
-  const points = [ a.clone().add(new THREE.Vector3(0, -0.5, 0)),
-                   b.clone().add(new THREE.Vector3(0, -0.5, 0)) ];
+  const material = new THREE.LineBasicMaterial({ color: 0x606060 });
+  const points = [
+    a.clone().add(new THREE.Vector3(0, -0.5, 0)),
+    b.clone().add(new THREE.Vector3(0, -0.5, 0))
+  ];
   const geom = new THREE.BufferGeometry().setFromPoints(points);
   const line = new THREE.Line(geom, material);
   scene.add(line);
 }
 
 // =====================================================
-// Truck movement (on roads) + orientation (direction change visible)
-// - Road graph: full triangle edges
-// - If WH1<->WH3 and you want via WH2, provide explicit reroute path
+// Truck movement (on roads) + orientation + wheel spin
+// - Full triangle graph (all edges available)
+// - Explicit reroutes honored via JSON path
 // =====================================================
 const trucksGroup = new THREE.Group();
 scene.add(trucksGroup);
 
 // State per moving truck
-let movingTrucks = []; // [{id, mesh, path:[Vector3], segIdx, segT, speed}]
+let movingTrucks = []; // [{id, mesh, wheels[], path:[Vector3], segIdx, segT, speed, wheelRadius, lastPos}]
 
-const matGreen = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
-const matRed   = new THREE.MeshBasicMaterial({ color: 0xff4444 });
+const matGreen = new THREE.MeshLambertMaterial({ color: 0x00b050 });
+const matRed   = new THREE.MeshLambertMaterial({ color: 0xff4444 });
 
 // Undirected adjacency for triangle (all edges)
 const ADJ = {
@@ -244,11 +264,10 @@ const ADJ = {
 
 function defaultPathIDs(origin, destination) {
   if (origin === destination) return [origin];
-  // direct edge exists → straight route
   if (ADJ[origin] && ADJ[origin].includes(destination)) {
     return [origin, destination];
   }
-  // fallback: go via WH2 if possible
+  // fallback via WH2 if needed
   if (origin !== "WH2" && destination !== "WH2") {
     return [origin, "WH2", destination];
   }
@@ -265,36 +284,67 @@ function idsToPoints(ids) {
   return pts;
 }
 
+// Real truck model (cab + cargo + 6 wheels)
 function createTruckMesh(delayed) {
-  // Cone as a tiny arrow pointing +Z by default; we’ll rotate per-segment
-  const cone = new THREE.ConeGeometry(0.6, 1.6, 16);
-  const mat  = delayed ? matRed : matGreen;
-  const mesh = new THREE.Mesh(cone, mat);
-  // rotate so the cone points forward along +Z
-  mesh.rotation.x = Math.PI; // flip cone to point forward (depends on geometry orientation)
-  return mesh;
+  const group = new THREE.Group();
+
+  const bodyColor = delayed ? 0xff4444 : 0x00b050;
+  const cabColor  = delayed ? 0xcc3333 : 0x008a3a;
+  const wheelColor = 0x222222;
+
+  const bodyGeo = new THREE.BoxGeometry(2.6, 1.4, 1.4);
+  const bodyMat = new THREE.MeshLambertMaterial({ color: bodyColor });
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  body.position.set(0, 0.9, 0);
+  group.add(body);
+
+  const cabGeo = new THREE.BoxGeometry(1.0, 1.1, 1.2);
+  const cabMat = new THREE.MeshLambertMaterial({ color: cabColor });
+  const cab = new THREE.Mesh(cabGeo, cabMat);
+  cab.position.set(-1.8, 0.85, 0);
+  group.add(cab);
+
+  const wheelGeo = new THREE.CylinderGeometry(0.28, 0.28, 0.4, 16);
+  const wheelMat = new THREE.MeshStandardMaterial({ color: wheelColor, metalness: 0.2, roughness: 0.6 });
+  const wheels = [];
+  function addWheel(x, z) {
+    const w = new THREE.Mesh(wheelGeo, wheelMat);
+    w.rotation.z = Math.PI / 2; // spin around X axis as truck moves forward
+    w.position.set(x, 0.4, z);
+    group.add(w);
+    wheels.push(w);
+  }
+  // front axle
+  addWheel(-2.2,  0.7);
+  addWheel(-2.2, -0.7);
+  // middle axle
+  addWheel(-0.6,  0.7);
+  addWheel(-0.6, -0.7);
+  // rear axle
+  addWheel( 1.0,  0.7);
+  addWheel( 1.0, -0.7);
+
+  group.userData.wheels = wheels;
+  group.userData.wheelRadius = 0.28;
+
+  return group;
 }
 
 function spawnMovingTruck(truck, rerouteMap) {
   const delayed = (truck.status && String(truck.status).toLowerCase() === 'delayed') ||
                   (truck.delay_hours || 0) > 0;
 
-  // Determine path IDs
   let pathIDs = null;
   if (rerouteMap.has(truck.id)) {
     pathIDs = rerouteMap.get(truck.id);
   } else {
     pathIDs = defaultPathIDs(truck.origin, truck.destination);
   }
-  // Ensure path begins at the origin warehouse
-  if (pathIDs[0] !== truck.origin) {
-    pathIDs.unshift(truck.origin);
-  }
-  // Ensure path ends at destination warehouse
+
+  // ensure path starts/ends correctly
+  if (pathIDs[0] !== truck.origin) pathIDs.unshift(truck.origin);
   const last = pathIDs[pathIDs.length - 1];
-  if (last !== truck.destination) {
-    pathIDs.push(truck.destination);
-  }
+  if (last !== truck.destination) pathIDs.push(truck.destination);
 
   const pathPts = idsToPoints(pathIDs);
   if (pathPts.length < 1) return;
@@ -303,15 +353,18 @@ function spawnMovingTruck(truck, rerouteMap) {
   mesh.position.copy(pathPts[0]);
   trucksGroup.add(mesh);
 
-  const SPEED = delayed ? 2.0 : 3.0; // units/sec
+  const SPEED = delayed ? 2.0 : 3.2; // units/sec; delayed slightly slower
 
   movingTrucks.push({
     id: truck.id,
     mesh,
+    wheels: mesh.userData.wheels || [],
     path: pathPts,
     segIdx: 0,
     segT: 0,
-    speed: SPEED
+    speed: SPEED,
+    wheelRadius: mesh.userData.wheelRadius || 0.28,
+    lastPos: pathPts[0].clone()
   });
 }
 
@@ -330,7 +383,7 @@ async function loadScenario(file, labelFromCaller) {
     while (trucksGroup.children.length) trucksGroup.remove(trucksGroup.children[0]);
     movingTrucks = [];
 
-    // Build explicit reroute map: truckId -> ["WH1","WH3","WH2"] etc.
+    // Explicit reroutes: truckId -> ["WH1","WH3","WH2"]
     const rerouteMap = new Map();
     if (Array.isArray(data.reroutes)) {
       for (const r of data.reroutes) {
@@ -407,10 +460,21 @@ function updateMovingTrucks(dt) {
     const pos = new THREE.Vector3().lerpVectors(a, b, t.segT);
     t.mesh.position.copy(pos);
 
-    // Face the movement direction (visible direction change on turns)
+    // Face movement direction (shows turning at junctions)
     tmpDir.subVectors(b, a).normalize();
     const target = new THREE.Vector3().addVectors(pos, tmpDir);
     t.mesh.lookAt(target);
+
+    // Wheel spin based on distance travelled this frame
+    const deltaDist = pos.distanceTo(t.lastPos);
+    if (t.wheels && t.wheels.length && t.wheelRadius > 0) {
+      const angle = deltaDist / t.wheelRadius; // radians
+      for (const w of t.wheels) {
+        // wheels rotate around their axle (X axis after z-rotation applied)
+        w.rotation.x -= angle; // negative to match forward motion
+      }
+    }
+    t.lastPos.copy(pos);
   }
 }
 
