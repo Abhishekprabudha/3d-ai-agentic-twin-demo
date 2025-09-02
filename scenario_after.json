@@ -20,18 +20,18 @@
     {
       "truckId": "T4",
       "path": ["WH1", "WH3", "WH2"],
-      "reason": "Detour via WH3 to avoid dock delay on WH1→WH2 direct"
+      "reason": "Detour via WH3 to bypass delay on direct WH1→WH2 link"
     }
   ],
   "commentary": {
-    "static": "Disruption resolved by rerouting Truck T4 from WH1 to WH2 via WH3. Movement follows triangular roads with visible course change.",
+    "static": "Disruption resolved by rerouting Truck T4 from Warehouse 1 to Warehouse 2 via Warehouse 3. Triangular road network shows a visible course change.",
     "timeline": [
-      { "delay_ms": 0,    "msg": "Delay detected on the direct WH1 to WH2 corridor affecting Truck T4 (5 hours)." },
-      { "delay_ms": 700,  "msg": "AI recommends reroute: Warehouse 1 → Warehouse 3 → Warehouse 2 to bypass the bottleneck." },
-      { "delay_ms": 1300, "msg": "Truck T4 begins detour at Warehouse 1, turning north-east toward Warehouse 3." },
-      { "delay_ms": 1900, "msg": "T4 reaches Warehouse 3 and turns south-west toward Warehouse 2, avoiding the congested link." },
-      { "delay_ms": 2500, "msg": "Inventories rebalanced: WH1 and WH3 at 450 units, WH2 steady at 600. Network flow stabilized." },
-      { "delay_ms": 3100, "msg": "ETA recovery within tolerance; no downstream stockouts expected." }
+      { "delay_ms": 0,    "msg": "Delay detected on the direct Warehouse 1 to Warehouse 2 corridor, impacting Truck T4 (5 hours)." },
+      { "delay_ms": 700,  "msg": "AI recommends reroute: Warehouse 1 → Warehouse 3 → Warehouse 2 to avoid the bottleneck." },
+      { "delay_ms": 1300, "msg": "Truck T4 commences detour, turning toward Warehouse 3 on the upper edge of the triangle." },
+      { "delay_ms": 1900, "msg": "T4 passes Warehouse 3 and turns toward Warehouse 2, rejoining normal flow." },
+      { "delay_ms": 2500, "msg": "Inventories balanced: WH1 = 450, WH3 = 450, WH2 = 600. Network flow stabilizes." },
+      { "delay_ms": 3100, "msg": "ETA recovery within tolerance; downstream service levels preserved." }
     ]
   }
 }
