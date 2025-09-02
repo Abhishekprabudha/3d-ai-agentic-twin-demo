@@ -1,4 +1,4 @@
-// --- Setup ---
+// ============ Scene setup ============
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 const renderer = new THREE.WebGLRenderer();
@@ -7,25 +7,27 @@ document.body.appendChild(renderer.domElement);
 
 const light = new THREE.AmbientLight(0xffffff, 1);
 scene.add(light);
-camera.position.z = 30;
+camera.position.z = 30;  // pull back to see everything
 
-// --- Warehouses (persistent) ---
-const textureLoader = new THREE.TextureLoader();
-const warehouseTexture = textureLoader.load('warehouse_texture.png', () => {
-  // after texture loads, build warehouses
-  buildWarehouses();
-  // initial draw
-  loadScenario('scenario_before.json');
-});
-
+// ============ Warehouse positions ============
 const WH_POS = {
   WH1: new THREE.Vector3(-10, 0, 0),
   WH2: new THREE.Vector3(0,   0, 0),
   WH3: new THREE.Vector3(10,  0, 0),
 };
 
+// ============ Warehouses (persistent) ============
+const textureLoader = new THREE.TextureLoader();
+// If your file is .jpg, change the filename below accordingly.
+const warehouseTexture = textureLoader.load('warehouse_texture.png', () => {
+  buildWarehouses();
+  buildRoads();
+  // Load the initial view
+  loadScenario('scenario_before.json');
+});
+
 function createWarehouseMesh(pos) {
-  const geom = new THREE.BoxGeometry(4, 2, 4);
+  const geom = new THREE.BoxGeometry(6, 3, 6);   // wider/taller for visibility
   const mat  = new THREE.MeshBasicMaterial({ map: warehouseTexture, transparent: true });
   const m = new THREE.Mesh(geom, mat);
   m.position.copy(pos);
@@ -36,17 +38,22 @@ function buildWarehouses() {
   Object.values(WH_POS).forEach(v => scene.add(createWarehouseMesh(v)));
 }
 
-// Optional: simple “roads” between warehouses
+// Simple straight “roads” between neighboring warehouses
+function buildRoads() {
+  createRoad(WH_POS.WH1, WH_POS.WH2);
+  createRoad(WH_POS.WH2, WH_POS.WH3);
+}
 function createRoad(a, b) {
   const material = new THREE.LineBasicMaterial({ color: 0x555555 });
-  const points = [a.clone().add(new THREE.Vector3(0, -0.8, 0)), b.clone().add(new THREE.Vector3(0, -0.8, 0))];
+  const points = [
+    a.clone().add(new THREE.Vector3(0, -0.9, 0)),
+    b.clone().add(new THREE.Vector3(0, -0.9, 0))
+  ];
   const geom = new THREE.BufferGeometry().setFromPoints(points);
   scene.add(new THREE.Line(geom, material));
 }
-createRoad(WH_POS.WH1, WH_POS.WH2);
-createRoad(WH_POS.WH2, WH_POS.WH3);
 
-// --- Trucks (replace-only) ---
+// ============ Trucks (updated per scenario only) ============
 const trucksGroup = new THREE.Group();
 scene.add(trucksGroup);
 
@@ -60,39 +67,51 @@ function drawTruckAt(pos, delayed) {
   trucksGroup.add(m);
 }
 
-// --- Scenario loader ---
-// Supports your JSON schema: { trucks: [{id, origin, destination, status, delay_hours}] }
+// Load scenario JSON with fields: origin, destination, status, delay_hours
 async function loadScenario(file) {
   try {
     const res = await fetch(file);
     const data = await res.json();
 
-    // clear ONLY trucks
+    // clear ONLY trucks (keep warehouses/roads/lights)
     while (trucksGroup.children.length) trucksGroup.remove(trucksGroup.children[0]);
 
-    // place trucks slightly below their origin warehouse
-    data.trucks.forEach(tr => {
-      const originPos = WH_POS[tr.origin] || new THREE.Vector3(0,0,0);
-      const p = originPos.clone().add(new THREE.Vector3(0, -3, 0));
-      const delayed = (tr.status && String(tr.status).toLowerCase() === 'delayed') || (tr.delay_hours || 0) > 0;
+    // count how many trucks start at each origin so we can offset vertically
+    const perOriginCount = { WH1: 0, WH2: 0, WH3: 0 };
+
+    (data.trucks || []).forEach(tr => {
+      const originId = tr.origin;
+      const originPos = WH_POS[originId];
+      if (!originPos) return; // skip if origin not mapped
+
+      const idx = (perOriginCount[originId] || 0);
+      perOriginCount[originId] = idx + 1;
+
+      // base below the warehouse, stack each additional truck lower so they don't overlap
+      const base = originPos.clone().add(new THREE.Vector3(0, -3, 0));
+      const offset = new THREE.Vector3(0, -idx * 1.2, 0);
+      const p = base.add(offset);
+
+      const delayed = (tr.status && String(tr.status).toLowerCase() === 'delayed') ||
+                      (tr.delay_hours || 0) > 0;
+
       drawTruckAt(p, delayed);
     });
-  } catch (e) {
-    console.error('Failed to load scenario:', e);
+  } catch (err) {
+    console.error('Failed to load scenario:', err);
   }
 }
-
-// expose for buttons in index.html
+// make available for the buttons in index.html
 window.loadScenario = loadScenario;
 
-// --- Animate loop ---
+// ============ Animate/render loop ============
 function animate() {
   requestAnimationFrame(animate);
   renderer.render(scene, camera);
 }
 animate();
 
-// --- Handle resize ---
+// Handle window resize
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
