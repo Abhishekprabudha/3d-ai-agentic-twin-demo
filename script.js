@@ -1,6 +1,7 @@
 // ===========================
 // 3D AI Agentic Twin — Script
-// Start-to-finish narrated commentary + trucks moving on roads
+// Triangle layout + labeled warehouses + roads + oriented truck movement
+// Continuous narrated commentary (text + human-like TTS w/ FIFO queue)
 // ===========================
 
 // ============ Scene setup ============
@@ -8,13 +9,19 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(
   75, window.innerWidth / window.innerHeight, 0.1, 1000
 );
-const renderer = new THREE.WebGLRenderer();
+const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
 const light = new THREE.AmbientLight(0xffffff, 1);
 scene.add(light);
-camera.position.z = 30;
+camera.position.set(0, 20, 35);
+camera.lookAt(0, 0, 0);
+
+// Ground/grid
+const grid = new THREE.GridHelper(80, 20, 0x303030, 0x1a1a1a);
+grid.position.y = -0.01;
+scene.add(grid);
 
 // ============ Commentary engine ============
 const logEl = document.getElementById("commentaryLog");
@@ -127,20 +134,51 @@ function ttsFlushQueue(cancelSpeech = false) {
   if (cancelSpeech && ttsSupported) synth.cancel();
 }
 
-// ============ Warehouse positions ============
+// ============ Warehouse positions (TRIANGLE LAYOUT) ============
+// Equilateral-ish triangle for clear roads & turns
 const WH_POS = {
-  WH1: new THREE.Vector3(-10, 0, 0),
-  WH2: new THREE.Vector3(0,   0, 0),
-  WH3: new THREE.Vector3(10,  0, 0)
+  WH1: new THREE.Vector3(-14, 0, -8),  // left
+  WH2: new THREE.Vector3( 14, 0, -8),  // right
+  WH3: new THREE.Vector3(  0, 0,  12)  // top
 };
 
-// ============ Warehouses (persistent) ============
+// ============ Warehouses, Labels, Roads ============
 const textureLoader = new THREE.TextureLoader();
+const LABELS = new THREE.Group();
+scene.add(LABELS);
+
+// Simple text sprite label
+function makeTextSprite(text) {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  const fontSize = 28;
+  const pad = 16;
+  ctx.font = `bold ${fontSize}px system-ui, Segoe UI, Roboto, sans-serif`;
+  const w = ctx.measureText(text).width + pad * 2;
+  const h = fontSize + pad * 2;
+  canvas.width = w;
+  canvas.height = h;
+  ctx.font = `bold ${fontSize}px system-ui, Segoe UI, Roboto, sans-serif`;
+  ctx.fillStyle = "rgba(10,10,11,0.8)";
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = "rgba(255,255,255,0.25)";
+  ctx.strokeRect(0, 0, w, h);
+  ctx.fillStyle = "#e6e6e6";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, pad, h / 2);
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+  const spr = new THREE.Sprite(mat);
+  const scale = 0.08; // tune size
+  spr.scale.set(w * scale, h * scale, 1);
+  return spr;
+}
+
 const warehouseTexture = textureLoader.load("warehouse_texture.png", () => {
   buildWarehouses();
   buildRoads();
-  log("Warehouses and roads initialized");
-  // Kick off initial scenario
+  buildLabels();
+  log("Warehouses, roads, and labels initialized.");
   loadScenario("scenario_before.json", "Normal operations");
 });
 
@@ -154,55 +192,66 @@ function createWarehouseMesh(pos) {
 function buildWarehouses() {
   Object.values(WH_POS).forEach(v => scene.add(createWarehouseMesh(v)));
 }
-
-// ============ Roads (visual lines) ============
+function buildLabels() {
+  LABELS.clear();
+  const offsetY = 3.8;
+  const labels = [
+    ["WH1 — Delhi", WH_POS.WH1],
+    ["WH2 — Mumbai", WH_POS.WH2],
+    ["WH3 — Bangalore", WH_POS.WH3]
+  ];
+  for (const [text, pos] of labels) {
+    const spr = makeTextSprite(text);
+    spr.position.set(pos.x, pos.y + offsetY, pos.z);
+    LABELS.add(spr);
+  }
+}
 function buildRoads() {
+  // draw triangle edges: WH1–WH2, WH2–WH3, WH3–WH1
   createRoad(WH_POS.WH1, WH_POS.WH2);
   createRoad(WH_POS.WH2, WH_POS.WH3);
+  createRoad(WH_POS.WH3, WH_POS.WH1);
 }
 function createRoad(a, b) {
-  const material = new THREE.LineBasicMaterial({ color: 0x555555 });
-  const points = [
-    a.clone().add(new THREE.Vector3(0, -0.9, 0)),
-    b.clone().add(new THREE.Vector3(0, -0.9, 0))
-  ];
+  const material = new THREE.LineBasicMaterial({ color: 0x606060, linewidth: 2 });
+  const points = [ a.clone().add(new THREE.Vector3(0, -0.5, 0)),
+                   b.clone().add(new THREE.Vector3(0, -0.5, 0)) ];
   const geom = new THREE.BufferGeometry().setFromPoints(points);
-  scene.add(new THREE.Line(geom, material));
+  const line = new THREE.Line(geom, material);
+  scene.add(line);
 }
 
 // =====================================================
-// Truck movement on actual roads (NEW)
-// - Uses road graph: WH1<->WH2, WH2<->WH3
-// - WH1<->WH3 routes via WH2 unless explicit path is provided
+// Truck movement (on roads) + orientation (direction change visible)
+// - Road graph: full triangle edges
+// - If WH1<->WH3 and you want via WH2, provide explicit reroute path
 // =====================================================
 const trucksGroup = new THREE.Group();
 scene.add(trucksGroup);
 
 // State per moving truck
-let movingTrucks = []; // [{mesh, path: [Vector3,...], segIdx, segT, speedUnitsPerSec}]
+let movingTrucks = []; // [{id, mesh, path:[Vector3], segIdx, segT, speed}]
 
 const matGreen = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
-const matRed   = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+const matRed   = new THREE.MeshBasicMaterial({ color: 0xff4444 });
 
-// simple road graph (undirected)
+// Undirected adjacency for triangle (all edges)
 const ADJ = {
-  WH1: ["WH2"],
+  WH1: ["WH2","WH3"],
   WH2: ["WH1","WH3"],
-  WH3: ["WH2"]
+  WH3: ["WH1","WH2"]
 };
 
-// build a path as node ids (e.g., ["WH1","WH2","WH3"])
 function defaultPathIDs(origin, destination) {
   if (origin === destination) return [origin];
-  // if directly adjacent
+  // direct edge exists → straight route
   if (ADJ[origin] && ADJ[origin].includes(destination)) {
     return [origin, destination];
   }
-  // otherwise go via WH2 (single hub) if both sides connect
+  // fallback: go via WH2 if possible
   if (origin !== "WH2" && destination !== "WH2") {
     return [origin, "WH2", destination];
   }
-  // fallback: try direct anyway
   return [origin, destination];
 }
 
@@ -211,53 +260,64 @@ function idsToPoints(ids) {
   for (let i = 0; i < ids.length; i++) {
     const pos = WH_POS[ids[i]];
     if (!pos) continue;
-    // road is slightly lower for the line; we keep trucks on ground y=0
     pts.push(new THREE.Vector3(pos.x, 0, pos.z));
   }
   return pts;
 }
 
 function createTruckMesh(delayed) {
-  const geom = new THREE.SphereGeometry(0.5, 16, 16);
-  const mesh = new THREE.Mesh(geom, delayed ? matRed : matGreen);
+  // Cone as a tiny arrow pointing +Z by default; we’ll rotate per-segment
+  const cone = new THREE.ConeGeometry(0.6, 1.6, 16);
+  const mat  = delayed ? matRed : matGreen;
+  const mesh = new THREE.Mesh(cone, mat);
+  // rotate so the cone points forward along +Z
+  mesh.rotation.x = Math.PI; // flip cone to point forward (depends on geometry orientation)
   return mesh;
 }
 
-// Build movement state for one truck
 function spawnMovingTruck(truck, rerouteMap) {
   const delayed = (truck.status && String(truck.status).toLowerCase() === 'delayed') ||
                   (truck.delay_hours || 0) > 0;
 
-  // If there's an explicit reroute path for this truck, use it (e.g., ["WH3","WH1","WH2"])
+  // Determine path IDs
   let pathIDs = null;
   if (rerouteMap.has(truck.id)) {
     pathIDs = rerouteMap.get(truck.id);
   } else {
     pathIDs = defaultPathIDs(truck.origin, truck.destination);
   }
+  // Ensure path begins at the origin warehouse
+  if (pathIDs[0] !== truck.origin) {
+    pathIDs.unshift(truck.origin);
+  }
+  // Ensure path ends at destination warehouse
+  const last = pathIDs[pathIDs.length - 1];
+  if (last !== truck.destination) {
+    pathIDs.push(truck.destination);
+  }
+
   const pathPts = idsToPoints(pathIDs);
-  if (pathPts.length < 1) return; // nothing to do
+  if (pathPts.length < 1) return;
 
   const mesh = createTruckMesh(delayed);
   mesh.position.copy(pathPts[0]);
   trucksGroup.add(mesh);
 
-  // base speed; delayed trucks slower
-  const SPEED = delayed ? 2.0 : 3.0; // world units per second
+  const SPEED = delayed ? 2.0 : 3.0; // units/sec
 
   movingTrucks.push({
     id: truck.id,
     mesh,
-    path: pathPts, // waypoints
-    segIdx: 0,     // current segment start index
-    segT: 0,       // 0..1 along current segment
+    path: pathPts,
+    segIdx: 0,
+    segT: 0,
     speed: SPEED
   });
 }
 
 function lengthOfSeg(a, b) { return a.distanceTo(b); }
 
-// ============ Scenario loader (sequenced narration + movement) ============
+// ============ Scenario loader ============
 async function loadScenario(file, labelFromCaller) {
   try {
     clearLog();
@@ -266,42 +326,37 @@ async function loadScenario(file, labelFromCaller) {
     const res = await fetch(file);
     const data = await res.json();
 
-    // clear ONLY trucks (keep warehouses/roads/lights)
+    // Clear trucks
     while (trucksGroup.children.length) trucksGroup.remove(trucksGroup.children[0]);
     movingTrucks = [];
 
-    // Build a quick map of explicit reroutes from JSON (by truckId)
+    // Build explicit reroute map: truckId -> ["WH1","WH3","WH2"] etc.
     const rerouteMap = new Map();
     if (Array.isArray(data.reroutes)) {
       for (const r of data.reroutes) {
-        if (Array.isArray(r.path) && r.path.length >= 1 && r.truckId) {
-          rerouteMap.set(r.truckId, r.path);
+        if (Array.isArray(r.path) && r.truckId) {
+          rerouteMap.set(r.truckId, r.path.slice());
         }
       }
     }
 
-    // Spawn moving trucks with paths
+    // Spawn movers
     let total = 0, delayedCount = 0;
     (data.trucks || []).forEach(tr => {
       const delayed = (tr.status && String(tr.status).toLowerCase() === 'delayed') ||
                       (tr.delay_hours || 0) > 0;
       spawnMovingTruck(tr, rerouteMap);
-      total++;
-      if (delayed) delayedCount++;
+      total++; if (delayed) delayedCount++;
     });
 
-    // Core narration in order
+    // Narration
     log(`Warehouses rendered: 3`);
     log(`Trucks rendered: ${total} (delayed=${delayedCount})`);
-
     const isAfter = /after/i.test(file);
     const label = labelFromCaller || (isAfter ? 'After correction' : 'Normal operations');
     writeStaticSummary(data, label);
-
-    // Timeline (plays with its own delays, still enqueued in FIFO)
     await replayTimeline(data);
 
-    // Reroutes narration, if any
     if (Array.isArray(data.reroutes) && data.reroutes.length) {
       log(`Reroutes applied: ${data.reroutes.length}`);
       for (const r of data.reroutes) {
@@ -321,38 +376,41 @@ window.loadScenario = loadScenario;
 
 // ============ Animate/render loop ============
 const clock = new THREE.Clock();
+const tmpDir = new THREE.Vector3();
 
 function updateMovingTrucks(dt) {
   for (const t of movingTrucks) {
     const pts = t.path;
     if (!pts || pts.length < 2) continue;
 
-    // current segment endpoints
-    const a = pts[t.segIdx];
-    const b = pts[t.segIdx + 1];
-    const segLen = Math.max(0.0001, lengthOfSeg(a, b));
+    let a = pts[t.segIdx];
+    let b = pts[t.segIdx + 1];
 
-    // advance along the segment based on speed and dt
+    const segLen = Math.max(0.0001, a.distanceTo(b));
     const distThisFrame = t.speed * dt;
-    const dT = distThisFrame / segLen;
+    let dT = distThisFrame / segLen;
     t.segT += dT;
 
     if (t.segT >= 1) {
-      // move to next segment
       t.segIdx++;
       if (t.segIdx >= pts.length - 1) {
-        // reached destination: pin to last point
+        // Arrived at final waypoint
         t.mesh.position.copy(pts[pts.length - 1]);
-        continue; // stop advancing
+        continue;
       } else {
-        // carry over leftover portion if overshoot (optional; here we reset)
-        t.segT = t.segT - 1;
+        t.segT = t.segT - 1; // carry over extra progress
+        a = pts[t.segIdx];
+        b = pts[t.segIdx + 1];
       }
     }
 
-    // interpolate along current segment
     const pos = new THREE.Vector3().lerpVectors(a, b, t.segT);
     t.mesh.position.copy(pos);
+
+    // Face the movement direction (visible direction change on turns)
+    tmpDir.subVectors(b, a).normalize();
+    const target = new THREE.Vector3().addVectors(pos, tmpDir);
+    t.mesh.lookAt(target);
   }
 }
 
