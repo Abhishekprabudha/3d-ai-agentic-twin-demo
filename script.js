@@ -1,6 +1,6 @@
 // ===========================
 // 3D AI Agentic Twin — Script
-// Start-to-finish narrated commentary (text + human-like TTS w/ FIFO queue)
+// Start-to-finish narrated commentary + trucks moving on roads
 // ===========================
 
 // ============ Scene setup ============
@@ -44,7 +44,6 @@ function writeStaticSummary(data, label) {
     log(`${label}: ${wh} warehouses, ${tr} trucks.`);
   }
 }
-
 async function replayTimeline(data) {
   if (!data?.commentary?.timeline) return;
   for (const step of data.commentary.timeline) {
@@ -61,17 +60,10 @@ let VOICE = null;
 let ttsQueue = [];        // array of strings (speech chunks)
 let ttsPlaying = false;   // worker state
 
-// Prefer higher-quality or locale-appropriate voices if available
 const VOICE_PREFERENCES = [
-  /en-IN/i, // prioritize Indian English if present
-  /English.+India/i,
-  /Natural/i,
-  /Neural/i,
-  /Microsoft.+Online/i,
-  /Microsoft.+(Aria|Jenny|Guy|Davis|Ana)/i,
-  /Google.+(en-US|en-GB)/i,
-  /en-GB/i,
-  /en-US/i
+  /en-IN/i, /English.+India/i, /Natural/i, /Neural/i,
+  /Microsoft.+Online/i, /Microsoft.+(Aria|Jenny|Guy|Davis|Ana)/i,
+  /Google.+(en-US|en-GB)/i, /en-GB/i, /en-US/i
 ];
 
 function pickBestVoice() {
@@ -82,16 +74,12 @@ function pickBestVoice() {
     const v = voices.find((vv) => pref.test(vv.name) || pref.test(vv.lang));
     if (v) return v;
   }
-  return voices[0]; // fallback
+  return voices[0];
 }
-
-// voices may load asynchronously
 if (ttsSupported) {
   VOICE = pickBestVoice();
   if (!VOICE) synth.onvoiceschanged = () => { VOICE = pickBestVoice(); };
 }
-
-// Clean up text for nicer prosody
 function normalizeForSpeech(text) {
   return String(text)
     .replace(/\bETA\b/gi, "E T A")
@@ -103,30 +91,23 @@ function normalizeForSpeech(text) {
     .replace(/\s+/g, " ")
     .trim();
 }
-
-// Split into clauses so the engine can “breathe”
 function chunkForSpeech(text) {
   return normalizeForSpeech(text)
     .split(/(?<=[.!?;])\s+|(?<=,)\s+/)
     .filter(Boolean);
 }
-
-// Subtle randomness for less robotic delivery
 function humanizeRate(base = 1.0) {
   return Math.max(0.85, Math.min(1.15, base + (Math.random() - 0.5) * 0.08));
 }
 function humanizePitch(base = 1.0) {
   return Math.max(0.9, Math.min(1.2, base + (Math.random() - 0.5) * 0.06));
 }
-
-// Queue ops
 function ttsEnqueue(text) {
   if (!ttsSupported) return;
   const parts = chunkForSpeech(text);
   for (const p of parts) ttsQueue.push(p);
   if (!ttsPlaying) ttsPlayNext();
 }
-
 function ttsPlayNext() {
   if (!ttsSupported) return;
   if (!ttsQueue.length) { ttsPlaying = false; return; }
@@ -138,10 +119,8 @@ function ttsPlayNext() {
   u.pitch = humanizePitch(1.02);
   u.volume = 1.0;
   u.onend = () => { ttsPlayNext(); };
-  // do NOT cancel here; we want continuous playback
   synth.speak(u);
 }
-
 function ttsFlushQueue(cancelSpeech = false) {
   ttsQueue = [];
   ttsPlaying = false;
@@ -157,28 +136,26 @@ const WH_POS = {
 
 // ============ Warehouses (persistent) ============
 const textureLoader = new THREE.TextureLoader();
-// If your file is .jpg, change the filename below accordingly.
 const warehouseTexture = textureLoader.load("warehouse_texture.png", () => {
   buildWarehouses();
   buildRoads();
   log("Warehouses and roads initialized");
-  // Kick off initial scenario (first user interaction unlocks audio in most browsers)
+  // Kick off initial scenario
   loadScenario("scenario_before.json", "Normal operations");
 });
 
 function createWarehouseMesh(pos) {
-  const geom = new THREE.BoxGeometry(6, 3, 6); // wider/taller for visibility
+  const geom = new THREE.BoxGeometry(6, 3, 6);
   const mat  = new THREE.MeshBasicMaterial({ map: warehouseTexture, transparent: true });
   const m = new THREE.Mesh(geom, mat);
   m.position.copy(pos);
   return m;
 }
-
 function buildWarehouses() {
   Object.values(WH_POS).forEach(v => scene.add(createWarehouseMesh(v)));
 }
 
-// Simple straight “roads” between neighboring warehouses
+// ============ Roads (visual lines) ============
 function buildRoads() {
   createRoad(WH_POS.WH1, WH_POS.WH2);
   createRoad(WH_POS.WH2, WH_POS.WH3);
@@ -193,21 +170,94 @@ function createRoad(a, b) {
   scene.add(new THREE.Line(geom, material));
 }
 
-// ============ Trucks (updated per scenario only) ============
+// =====================================================
+// Truck movement on actual roads (NEW)
+// - Uses road graph: WH1<->WH2, WH2<->WH3
+// - WH1<->WH3 routes via WH2 unless explicit path is provided
+// =====================================================
 const trucksGroup = new THREE.Group();
 scene.add(trucksGroup);
+
+// State per moving truck
+let movingTrucks = []; // [{mesh, path: [Vector3,...], segIdx, segT, speedUnitsPerSec}]
 
 const matGreen = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
 const matRed   = new THREE.MeshBasicMaterial({ color: 0xff0000 });
 
-function drawTruckAt(pos, delayed) {
-  const geom = new THREE.SphereGeometry(0.5, 16, 16);
-  const m = new THREE.Mesh(geom, delayed ? matRed : matGreen);
-  m.position.copy(pos);
-  trucksGroup.add(m);
+// simple road graph (undirected)
+const ADJ = {
+  WH1: ["WH2"],
+  WH2: ["WH1","WH3"],
+  WH3: ["WH2"]
+};
+
+// build a path as node ids (e.g., ["WH1","WH2","WH3"])
+function defaultPathIDs(origin, destination) {
+  if (origin === destination) return [origin];
+  // if directly adjacent
+  if (ADJ[origin] && ADJ[origin].includes(destination)) {
+    return [origin, destination];
+  }
+  // otherwise go via WH2 (single hub) if both sides connect
+  if (origin !== "WH2" && destination !== "WH2") {
+    return [origin, "WH2", destination];
+  }
+  // fallback: try direct anyway
+  return [origin, destination];
 }
 
-// ============ Scenario loader (sequenced narration) ============
+function idsToPoints(ids) {
+  const pts = [];
+  for (let i = 0; i < ids.length; i++) {
+    const pos = WH_POS[ids[i]];
+    if (!pos) continue;
+    // road is slightly lower for the line; we keep trucks on ground y=0
+    pts.push(new THREE.Vector3(pos.x, 0, pos.z));
+  }
+  return pts;
+}
+
+function createTruckMesh(delayed) {
+  const geom = new THREE.SphereGeometry(0.5, 16, 16);
+  const mesh = new THREE.Mesh(geom, delayed ? matRed : matGreen);
+  return mesh;
+}
+
+// Build movement state for one truck
+function spawnMovingTruck(truck, rerouteMap) {
+  const delayed = (truck.status && String(truck.status).toLowerCase() === 'delayed') ||
+                  (truck.delay_hours || 0) > 0;
+
+  // If there's an explicit reroute path for this truck, use it (e.g., ["WH3","WH1","WH2"])
+  let pathIDs = null;
+  if (rerouteMap.has(truck.id)) {
+    pathIDs = rerouteMap.get(truck.id);
+  } else {
+    pathIDs = defaultPathIDs(truck.origin, truck.destination);
+  }
+  const pathPts = idsToPoints(pathIDs);
+  if (pathPts.length < 1) return; // nothing to do
+
+  const mesh = createTruckMesh(delayed);
+  mesh.position.copy(pathPts[0]);
+  trucksGroup.add(mesh);
+
+  // base speed; delayed trucks slower
+  const SPEED = delayed ? 2.0 : 3.0; // world units per second
+
+  movingTrucks.push({
+    id: truck.id,
+    mesh,
+    path: pathPts, // waypoints
+    segIdx: 0,     // current segment start index
+    segT: 0,       // 0..1 along current segment
+    speed: SPEED
+  });
+}
+
+function lengthOfSeg(a, b) { return a.distanceTo(b); }
+
+// ============ Scenario loader (sequenced narration + movement) ============
 async function loadScenario(file, labelFromCaller) {
   try {
     clearLog();
@@ -218,28 +268,24 @@ async function loadScenario(file, labelFromCaller) {
 
     // clear ONLY trucks (keep warehouses/roads/lights)
     while (trucksGroup.children.length) trucksGroup.remove(trucksGroup.children[0]);
+    movingTrucks = [];
 
-    // count how many trucks start at each origin so we can offset vertically
-    const perOriginCount = { WH1: 0, WH2: 0, WH3: 0 };
+    // Build a quick map of explicit reroutes from JSON (by truckId)
+    const rerouteMap = new Map();
+    if (Array.isArray(data.reroutes)) {
+      for (const r of data.reroutes) {
+        if (Array.isArray(r.path) && r.path.length >= 1 && r.truckId) {
+          rerouteMap.set(r.truckId, r.path);
+        }
+      }
+    }
 
+    // Spawn moving trucks with paths
     let total = 0, delayedCount = 0;
     (data.trucks || []).forEach(tr => {
-      const originId = tr.origin;
-      const originPos = WH_POS[originId];
-      if (!originPos) return; // skip if origin not mapped
-
-      const idx = (perOriginCount[originId] || 0);
-      perOriginCount[originId] = idx + 1;
-
-      // base below the warehouse, stack each additional truck lower so they don't overlap
-      const base = originPos.clone().add(new THREE.Vector3(0, -3, 0));
-      const offset = new THREE.Vector3(0, -idx * 1.2, 0);
-      const p = base.add(offset);
-
       const delayed = (tr.status && String(tr.status).toLowerCase() === 'delayed') ||
                       (tr.delay_hours || 0) > 0;
-
-      drawTruckAt(p, delayed);
+      spawnMovingTruck(tr, rerouteMap);
       total++;
       if (delayed) delayedCount++;
     });
@@ -271,12 +317,49 @@ async function loadScenario(file, labelFromCaller) {
     log('Error: Failed to load scenario JSON. Check console for details.');
   }
 }
-// make available for the buttons in index.html
 window.loadScenario = loadScenario;
 
 // ============ Animate/render loop ============
+const clock = new THREE.Clock();
+
+function updateMovingTrucks(dt) {
+  for (const t of movingTrucks) {
+    const pts = t.path;
+    if (!pts || pts.length < 2) continue;
+
+    // current segment endpoints
+    const a = pts[t.segIdx];
+    const b = pts[t.segIdx + 1];
+    const segLen = Math.max(0.0001, lengthOfSeg(a, b));
+
+    // advance along the segment based on speed and dt
+    const distThisFrame = t.speed * dt;
+    const dT = distThisFrame / segLen;
+    t.segT += dT;
+
+    if (t.segT >= 1) {
+      // move to next segment
+      t.segIdx++;
+      if (t.segIdx >= pts.length - 1) {
+        // reached destination: pin to last point
+        t.mesh.position.copy(pts[pts.length - 1]);
+        continue; // stop advancing
+      } else {
+        // carry over leftover portion if overshoot (optional; here we reset)
+        t.segT = t.segT - 1;
+      }
+    }
+
+    // interpolate along current segment
+    const pos = new THREE.Vector3().lerpVectors(a, b, t.segT);
+    t.mesh.position.copy(pos);
+  }
+}
+
 function animate() {
   requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  updateMovingTrucks(dt);
   renderer.render(scene, camera);
 }
 animate();
