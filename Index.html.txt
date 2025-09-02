@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>3D AI Agentic Twin Demo</title>
+  <style>
+    body { margin: 0; }
+    canvas { display: block; }
+    #buttons { position: absolute; top: 10px; left: 10px; }
+  </style>
+</head>
+<body>
+  <div id="buttons">
+    <button onclick="loadScenario('scenario_before.json')">Before Disruption</button>
+    <button onclick="loadScenario('scenario_after.json')">After Correction</button>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

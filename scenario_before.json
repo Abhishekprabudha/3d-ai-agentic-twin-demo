@@ -1,0 +1,91 @@
+{
+  "warehouses": [
+    {
+      "id": "WH1",
+      "location": "Delhi",
+      "inventory": 500
+    },
+    {
+      "id": "WH2",
+      "location": "Mumbai",
+      "inventory": 600
+    },
+    {
+      "id": "WH3",
+      "location": "Bangalore",
+      "inventory": 400
+    }
+  ],
+  "trucks": [
+    {
+      "id": "T1",
+      "origin": "WH3",
+      "destination": "WH2",
+      "status": "On-Time",
+      "delay_hours": 0
+    },
+    {
+      "id": "T2",
+      "origin": "WH1",
+      "destination": "WH2",
+      "status": "On-Time",
+      "delay_hours": 0
+    },
+    {
+      "id": "T3",
+      "origin": "WH1",
+      "destination": "WH3",
+      "status": "On-Time",
+      "delay_hours": 0
+    },
+    {
+      "id": "T4",
+      "origin": "WH3",
+      "destination": "WH2",
+      "status": "Delayed",
+      "delay_hours": 5
+    },
+    {
+      "id": "T5",
+      "origin": "WH2",
+      "destination": "WH3",
+      "status": "On-Time",
+      "delay_hours": 0
+    },
+    {
+      "id": "T6",
+      "origin": "WH1",
+      "destination": "WH1",
+      "status": "On-Time",
+      "delay_hours": 0
+    },
+    {
+      "id": "T7",
+      "origin": "WH3",
+      "destination": "WH2",
+      "status": "On-Time",
+      "delay_hours": 0
+    },
+    {
+      "id": "T8",
+      "origin": "WH1",
+      "destination": "WH2",
+      "status": "On-Time",
+      "delay_hours": 0
+    },
+    {
+      "id": "T9",
+      "origin": "WH1",
+      "destination": "WH3",
+      "status": "On-Time",
+      "delay_hours": 0
+    },
+    {
+      "id": "T10",
+      "origin": "WH2",
+      "destination": "WH3",
+      "status": "On-Time",
+      "delay_hours": 0
+    }
+  ]
+}
