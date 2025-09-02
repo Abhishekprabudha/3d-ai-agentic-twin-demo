@@ -9,6 +9,42 @@ const light = new THREE.AmbientLight(0xffffff, 1);
 scene.add(light);
 camera.position.z = 30;  // pull back to see everything
 
+// ============ Commentary engine ============
+const logEl = document.getElementById('commentaryLog');
+let t0 = performance.now();
+
+function nowSec() { return ((performance.now() - t0) / 1000).toFixed(1); }
+function clearLog() {
+  if (logEl) logEl.textContent = '';
+  t0 = performance.now();
+}
+function log(msg) {
+  const line = `[t=${nowSec()}s] ${msg}`;
+  if (logEl) logEl.textContent += line + '\n';
+  // Also print to console for dev convenience
+  console.log(line);
+}
+
+// Optional helpers to use JSON-provided narration
+function writeStaticSummary(data, label) {
+  if (data?.commentary?.static) {
+    log(`${label}: ${data.commentary.static}`);
+  } else {
+    const wh = (data?.warehouses || []).length || 3; // default 3 if not provided
+    const tr = (data?.trucks || []).length || 0;
+    log(`${label}: ${wh} warehouses, ${tr} trucks.`);
+  }
+}
+
+async function replayTimeline(data) {
+  if (!data?.commentary?.timeline) return;
+  for (const step of data.commentary.timeline) {
+    const delayMs = Math.max(0, step.delay_ms || 0);
+    await new Promise(r => setTimeout(r, delayMs));
+    if (typeof step.msg === 'string') log(step.msg);
+  }
+}
+
 // ============ Warehouse positions ============
 const WH_POS = {
   WH1: new THREE.Vector3(-10, 0, 0),
@@ -22,8 +58,9 @@ const textureLoader = new THREE.TextureLoader();
 const warehouseTexture = textureLoader.load('warehouse_texture.png', () => {
   buildWarehouses();
   buildRoads();
+  log('Warehouses and roads initialized');
   // Load the initial view
-  loadScenario('scenario_before.json');
+  loadScenario('scenario_before.json', 'Normal operations');
 });
 
 function createWarehouseMesh(pos) {
@@ -67,9 +104,12 @@ function drawTruckAt(pos, delayed) {
   trucksGroup.add(m);
 }
 
-// Load scenario JSON with fields: origin, destination, status, delay_hours
-async function loadScenario(file) {
+// ============ Scenario loader with narration ============
+async function loadScenario(file, labelFromCaller) {
   try {
+    clearLog();
+    log(`Loading scenario: ${file}`);
+
     const res = await fetch(file);
     const data = await res.json();
 
@@ -79,6 +119,7 @@ async function loadScenario(file) {
     // count how many trucks start at each origin so we can offset vertically
     const perOriginCount = { WH1: 0, WH2: 0, WH3: 0 };
 
+    let total = 0, delayedCount = 0;
     (data.trucks || []).forEach(tr => {
       const originId = tr.origin;
       const originPos = WH_POS[originId];
@@ -96,9 +137,35 @@ async function loadScenario(file) {
                       (tr.delay_hours || 0) > 0;
 
       drawTruckAt(p, delayed);
+      total++;
+      if (delayed) delayedCount++;
     });
+
+    log(`Warehouses rendered: 3`);
+    log(`Trucks rendered: ${total} (delayed=${delayedCount})`);
+
+    // Label for narration (fallback to filename-based)
+    const isAfter = /after/i.test(file);
+    const label = labelFromCaller || (isAfter ? 'After correction' : 'Normal operations');
+    writeStaticSummary(data, label);
+
+    // Optional: dynamic timeline narration from JSON
+    replayTimeline(data).catch(()=>{});
+
+    // Optional: narrate reroutes if provided in "after" JSON
+    if (Array.isArray(data.reroutes) && data.reroutes.length) {
+      log(`Reroutes applied: ${data.reroutes.length}`);
+      for (const r of data.reroutes) {
+        const reason = r.reason ? ` (${r.reason})` : '';
+        const path = Array.isArray(r.path) ? ` → ${r.path.join(' → ')}` : '';
+        log(`Truck ${r.truckId} rerouted${reason}${path}`);
+      }
+      log('Network stabilized after corrections.');
+    }
+
   } catch (err) {
     console.error('Failed to load scenario:', err);
+    log('Error: Failed to load scenario JSON. Check console for details.');
   }
 }
 // make available for the buttons in index.html
