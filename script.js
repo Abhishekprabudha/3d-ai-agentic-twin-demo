@@ -1,29 +1,39 @@
 // ===========================
 // 3D AI Agentic Twin — Script
-// Triangle layout + labeled warehouses (off-road) + triangle roads
+// Top-down India map + triangular road network (Delhi–Mumbai–Bangalore)
 // Real truck models + orientation + wheel spin
-// Continuous ping-pong movement with CURVED TURNS (Bezier smoothing)
-// Continuous narrated commentary (text + human-like TTS w/ FIFO queue)
+// Continuous ping-pong motion with curved turns (Bezier smoothing)
+// Collision control: convoy spacing on same segment + junction holding
+// Commentary (text) + humanoid TTS (FIFO)
 // ===========================
 
-// ============ Scene setup ============
+// ============ Scene + Camera (Top-Down Ortho) ============
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(
-  75, window.innerWidth / window.innerHeight, 0.1, 1000
-);
+
+// We'll size the map dynamically after the texture loads.
+// Create an orthographic camera looking straight down.
+let orthoCam;
+let mapPlane; // plane mesh with india_map.png
+let MAP_W = 120; // default world width; will be adjusted to image aspect
+let MAP_H = 140; // default world height; will be adjusted to image aspect
+
+function setupCamera() {
+  const aspect = window.innerWidth / window.innerHeight;
+  const halfH = MAP_H / 2;
+  const halfW = halfH * aspect; // keep whole map visible, adjust later if needed
+  orthoCam = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, 0.1, 1000);
+  orthoCam.position.set(0, 200, 0); // straight above
+  orthoCam.up.set(0, 0, -1);        // z goes down on the screen
+  orthoCam.lookAt(0, 0, 0);
+}
+
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
+// Subtle ambient
 const light = new THREE.AmbientLight(0xffffff, 1);
 scene.add(light);
-camera.position.set(0, 20, 35);
-camera.lookAt(0, 0, 0);
-
-// Ground/grid
-const grid = new THREE.GridHelper(80, 20, 0x303030, 0x1a1a1a);
-grid.position.y = -0.01;
-scene.add(grid);
 
 // ============ Commentary engine ============
 const logEl = document.getElementById("commentaryLog");
@@ -43,7 +53,7 @@ function log(msg, speak = true) {
   if (speak) ttsEnqueue(msg);
 }
 
-// Optional helpers to use JSON-provided narration
+// Optional helpers for JSON narration
 function writeStaticSummary(data, label) {
   if (data?.commentary?.static) {
     log(`${label}: ${data.commentary.static}`);
@@ -62,7 +72,7 @@ async function replayTimeline(data) {
   }
 }
 
-// ============ Human-like TTS with FIFO queue ============
+// ============ Humanoid TTS with FIFO ============
 const synth = window.speechSynthesis;
 const ttsSupported = typeof synth !== "undefined";
 let VOICE = null;
@@ -136,20 +146,11 @@ function ttsFlushQueue(cancelSpeech = false) {
   if (cancelSpeech && ttsSupported) synth.cancel();
 }
 
-// ============ Warehouse positions (TRIANGLE LAYOUT) ============
-// Equilateral-ish triangle for clear roads & turns
-const WH_POS = {
-  WH1: new THREE.Vector3(-14, 0, -8),  // left
-  WH2: new THREE.Vector3( 14, 0, -8),  // right
-  WH3: new THREE.Vector3(  0, 0,  12)  // top
-};
-
-// ============ Warehouses, Labels, Roads ============
+// ============ India Map (texture) ============
 const textureLoader = new THREE.TextureLoader();
 const LABELS = new THREE.Group();
 scene.add(LABELS);
 
-// Text sprite label (kept off roads, always on top)
 function makeTextSprite(text, opacity = 0.82) {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
@@ -171,9 +172,7 @@ function makeTextSprite(text, opacity = 0.82) {
   ctx.fillText(text, pad, h / 2);
 
   const tex = new THREE.CanvasTexture(canvas);
-  const mat = new THREE.SpriteMaterial({
-    map: tex, transparent: true, depthTest: false
-  });
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
   const spr = new THREE.Sprite(mat);
   const scale = 0.08;
   spr.scale.set(w * scale, h * scale, 1);
@@ -181,40 +180,50 @@ function makeTextSprite(text, opacity = 0.82) {
   return spr;
 }
 
-const warehouseTexture = textureLoader.load("warehouse_texture.png", () => {
-  buildWarehouses();
-  buildRoads();
-  buildLabels();
-  log("Warehouses, roads, and labels initialized.");
-  loadScenario("scenario_before.json", "Normal operations");
-});
+// India lat/lon bounds (approx)
+//   lat: 8..37 N, lon: 68..97 E
+const BOUNDS = { latMin: 8, latMax: 37, lonMin: 68, lonMax: 97 };
 
-function createWarehouseMesh(pos) {
-  const geom = new THREE.BoxGeometry(6, 3, 6);
-  const mat  = new THREE.MeshBasicMaterial({ map: warehouseTexture, transparent: true });
-  const m = new THREE.Mesh(geom, mat);
-  m.position.copy(pos);
-  return m;
+// Simple equirectangular projection into map-plane coordinates
+function projectLatLon(lat, lon) {
+  const u = (lon - BOUNDS.lonMin) / (BOUNDS.lonMax - BOUNDS.lonMin);
+  const v = 1 - (lat - BOUNDS.latMin) / (BOUNDS.latMax - BOUNDS.latMin); // v downwards
+  const x = (u - 0.5) * MAP_W;
+  const z = (v - 0.5) * MAP_H;
+  return new THREE.Vector3(x, 0, z);
 }
+
+// City “warehouses” (real coordinates)
+const CITY = {
+  WH1: { name: "WH1 — Delhi",     lat: 28.6139, lon: 77.2090 },
+  WH2: { name: "WH2 — Mumbai",    lat: 19.0760, lon: 72.8777 },
+  WH3: { name: "WH3 — Bangalore", lat: 12.9716, lon: 77.5946 }
+};
+
+let WH_POS = {}; // populated after map sizing
+
 function buildWarehouses() {
-  Object.values(WH_POS).forEach(v => scene.add(createWarehouseMesh(v)));
+  Object.keys(CITY).forEach(k => {
+    const pos = projectLatLon(CITY[k].lat, CITY[k].lon);
+    WH_POS[k] = pos;
+    const mesh = createWarehouseMesh(pos);
+    scene.add(mesh);
+  });
 }
+
 function buildLabels() {
   LABELS.clear();
-  const offsetY = 4.2;
-
-  // triangle centroid
+  const offsetY = 3.5;
+  // centroid of triangle
   const centroid = new THREE.Vector3(
     (WH_POS.WH1.x + WH_POS.WH2.x + WH_POS.WH3.x) / 3,
     0,
     (WH_POS.WH1.z + WH_POS.WH2.z + WH_POS.WH3.z) / 3
   );
 
-  // place label pushed outward; optional angleOffset (radians) to avoid sitting on a road line
-  function placeLabel(text, basePos, pushOut = 6.5, angleOffset = 0) {
+  function placeLabel(text, basePos, pushOut = 7.0, angleOffset = 0) {
     const fromCenter = new THREE.Vector3().subVectors(basePos, centroid).setY(0);
     if (fromCenter.lengthSq() < 1e-6) fromCenter.set(1, 0, 0);
-    // rotate around Y for a slight angular offset when needed
     const dir = fromCenter.clone().normalize();
     if (angleOffset !== 0) {
       const c = Math.cos(angleOffset), s = Math.sin(angleOffset);
@@ -225,53 +234,76 @@ function buildLabels() {
     dir.multiplyScalar(pushOut);
     const pos = new THREE.Vector3().copy(basePos).add(dir);
     const spr = makeTextSprite(text, 0.8);
-    spr.position.set(pos.x, basePos.y + offsetY, pos.z);
-    return spr;
+    spr.position.set(pos.x, offsetY, pos.z);
+    LABELS.add(spr);
   }
 
-  LABELS.add(placeLabel("WH1 — Delhi",     WH_POS.WH1, 6.5,  0.10));
-  LABELS.add(placeLabel("WH2 — Mumbai",    WH_POS.WH2, 6.5, -0.10));
-  // WH3 gets an extra push and a small angular offset so it never sits on the WH3 road
-  LABELS.add(placeLabel("WH3 — Bangalore", WH_POS.WH3, 8.0,  0.20));
+  placeLabel(CITY.WH1.name, WH_POS.WH1, 7.0,  0.10);
+  placeLabel(CITY.WH2.name, WH_POS.WH2, 7.0, -0.10);
+  placeLabel(CITY.WH3.name, WH_POS.WH3, 8.2,  0.20); // push WH3 more so it never covers the node
+}
+
+function createWarehouseMesh(pos) {
+  // flat “depot” disc
+  const geo = new THREE.CylinderGeometry(2.5, 2.5, 0.6, 24);
+  const mat = new THREE.MeshBasicMaterial({ color: 0x3c82f6 });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.copy(pos);
+  m.position.y = 0.3; // slight lift
+  return m;
 }
 
 function buildRoads() {
-  // triangle edges: WH1–WH2, WH2–WH3, WH3–WH1
-  createRoad(WH_POS.WH1, WH_POS.WH2);
-  createRoad(WH_POS.WH2, WH_POS.WH3);
-  createRoad(WH_POS.WH3, WH_POS.WH1);
+  // draw triangle edges on the map (top view lines)
+  drawRoad(WH_POS.WH1, WH_POS.WH2);
+  drawRoad(WH_POS.WH2, WH_POS.WH3);
+  drawRoad(WH_POS.WH3, WH_POS.WH1);
 }
-function createRoad(a, b) {
-  const material = new THREE.LineBasicMaterial({ color: 0x606060 });
-  const points = [
-    a.clone().add(new THREE.Vector3(0, -0.5, 0)),
-    b.clone().add(new THREE.Vector3(0, -0.5, 0))
-  ];
+function drawRoad(a, b) {
+  const material = new THREE.LineBasicMaterial({ color: 0x505050, linewidth: 2 });
+  const points = [ a.clone(), b.clone() ].map(p => p.clone().add(new THREE.Vector3(0, 0.01, 0))); // slight lift
   const geom = new THREE.BufferGeometry().setFromPoints(points);
   const line = new THREE.Line(geom, material);
+  line.renderOrder = 1;
   scene.add(line);
 }
 
-// =====================================================
-// Truck movement (curved turns) + orientation + wheel spin
-// - Full triangle graph (all edges available)
-// - Explicit reroutes honored via JSON path
-// - Continuous ping-pong motion along a SMOOTHED path
-// =====================================================
+// ============ Map texture load ============
+textureLoader.load("india_map.png", (tex) => {
+  // scale plane to image aspect
+  const img = tex.image;
+  const aspect = img.width / img.height;
+  MAP_W = 140 * aspect;
+  MAP_H = 140;
+
+  const planeGeo = new THREE.PlaneGeometry(MAP_W, MAP_H);
+  const planeMat = new THREE.MeshBasicMaterial({ map: tex });
+  mapPlane = new THREE.Mesh(planeGeo, planeMat);
+  mapPlane.rotation.x = -Math.PI / 2; // lay flat
+  mapPlane.position.y = 0;            // y=0 plane
+  scene.add(mapPlane);
+
+  // camera after map sizes known
+  setupCamera();
+
+  // After camera set, we can project cities and build network
+  buildWarehouses();
+  buildRoads();
+  buildLabels();
+
+  log("Map and road network initialized.");
+  loadScenario("scenario_before.json", "Normal operations");
+});
+
+// ============ Road Graph + Movement ============
 const trucksGroup = new THREE.Group();
 scene.add(trucksGroup);
 
-// State per moving truck
-let movingTrucks = []; // [{id, mesh, wheels[], path:[Vector3], segIdx, segT, direction, speed, wheelRadius, lastPos}]
-
-const matGreen = new THREE.MeshLambertMaterial({ color: 0x00b050 });
-const matRed   = new THREE.MeshLambertMaterial({ color: 0xff4444 });
-
-// Undirected adjacency for triangle (all edges)
+// adjacency (all edges of triangle)
 const ADJ = {
-  WH1: ["WH2","WH3"],
-  WH2: ["WH1","WH3"],
-  WH3: ["WH1","WH2"]
+  WH1: ["WH2", "WH3"],
+  WH2: ["WH1", "WH3"],
+  WH3: ["WH1", "WH2"]
 };
 
 function defaultPathIDs(origin, destination) {
@@ -279,7 +311,7 @@ function defaultPathIDs(origin, destination) {
   if (ADJ[origin] && ADJ[origin].includes(destination)) {
     return [origin, destination];
   }
-  // fallback via WH2 if needed
+  // fallback route via WH2 if both connect to it
   if (origin !== "WH2" && destination !== "WH2") {
     return [origin, "WH2", destination];
   }
@@ -287,23 +319,14 @@ function defaultPathIDs(origin, destination) {
 }
 
 function idsToPoints(ids) {
-  const pts = [];
-  for (let i = 0; i < ids.length; i++) {
-    const pos = WH_POS[ids[i]];
-    if (!pos) continue;
-    pts.push(new THREE.Vector3(pos.x, 0, pos.z));
-  }
-  return pts;
+  return ids.map(id => WH_POS[id]).filter(Boolean).map(p => new THREE.Vector3(p.x, 0.5, p.z));
 }
 
-// ---- Bezier smoothing (rounded corners) ----
-// Given base waypoints, returns a densified list with quadratic Bezier corners.
-// radiusLimit controls how far we cut into each segment near corners.
-// samplesPerCorner controls smoothness of each rounded turn.
+// --- Bezier smoothing for rounded turns ---
 function smoothPath(basePts, radiusLimit = 2.2, samplesPerCorner = 8) {
   if (!basePts || basePts.length < 2) return basePts || [];
   const out = [];
-  out.push(basePts[0].clone()); // start
+  out.push(basePts[0].clone());
 
   for (let i = 1; i < basePts.length - 1; i++) {
     const p0 = basePts[i - 1];
@@ -319,45 +342,36 @@ function smoothPath(basePts, radiusLimit = 2.2, samplesPerCorner = 8) {
       out.push(p1.clone());
       continue;
     }
-    vIn.normalize();
-    vOut.normalize();
-
-    // how much to "cut" near the corner; keep below 40% of segment length
+    vIn.normalize(); vOut.normalize();
     const cut = Math.min(radiusLimit, 0.4 * Math.min(lenIn, lenOut));
-
     const pIn  = new THREE.Vector3().copy(p1).addScaledVector(vIn,  -cut);
     const pOut = new THREE.Vector3().copy(p1).addScaledVector(vOut,  cut);
 
-    // straight from previous point to pIn (unless duplicate)
     const prev = out[out.length - 1];
     if (!prev.equals(pIn)) out.push(pIn);
 
-    // quadratic Bezier from pIn -> p1 -> pOut, sample interior points
     for (let s = 1; s < samplesPerCorner; s++) {
       const t = s / samplesPerCorner;
-      // B(t) = (1-t)^2 * pIn + 2(1-t)t * p1 + t^2 * pOut
       const a = (1 - t) * (1 - t);
       const b = 2 * (1 - t) * t;
       const c = t * t;
       const q = new THREE.Vector3(
         a * pIn.x + b * p1.x + c * pOut.x,
-        0,
+        0.5,
         a * pIn.z + b * p1.z + c * pOut.z
       );
       out.push(q);
     }
-
     out.push(pOut);
   }
 
-  out.push(basePts[basePts.length - 1].clone()); // end
+  out.push(basePts[basePts.length - 1].clone());
   return out;
 }
 
-// Real truck model (cab + cargo + 6 wheels)
+// ============ Truck model ============
 function createTruckMesh(delayed) {
   const group = new THREE.Group();
-
   const bodyColor = delayed ? 0xff4444 : 0x00b050;
   const cabColor  = delayed ? 0xcc3333 : 0x008a3a;
   const wheelColor = 0x222222;
@@ -379,72 +393,83 @@ function createTruckMesh(delayed) {
   const wheels = [];
   function addWheel(x, z) {
     const w = new THREE.Mesh(wheelGeo, wheelMat);
-    w.rotation.z = Math.PI / 2; // spin around X axis as truck moves forward
+    w.rotation.z = Math.PI / 2;
     w.position.set(x, 0.4, z);
     group.add(w);
     wheels.push(w);
   }
-  // front axle
-  addWheel(-2.2,  0.7);
-  addWheel(-2.2, -0.7);
-  // middle axle
-  addWheel(-0.6,  0.7);
-  addWheel(-0.6, -0.7);
-  // rear axle
-  addWheel( 1.0,  0.7);
-  addWheel( 1.0, -0.7);
+  addWheel(-2.2,  0.7); addWheel(-2.2, -0.7);
+  addWheel(-0.6,  0.7); addWheel(-0.6, -0.7);
+  addWheel( 1.0,  0.7); addWheel( 1.0, -0.7);
 
   group.userData.wheels = wheels;
   group.userData.wheelRadius = 0.28;
-
   return group;
 }
 
-// Spawn a moving truck with a SMOOTH path
+// ============ Movement State ============
+const trucksGroup = new THREE.Group();
+scene.add(trucksGroup);
+
+let movingTrucks = []; // [{id, mesh, wheels[], path:[Vector3], segIdx, segT, direction, speed, wheelRadius, lastPos, pausedUntil}]
+const tmpDir = new THREE.Vector3();
+
+// Convoy spacing & junction holding
+const MIN_GAP = 2.2;         // min spacing along same segment/direction (world units)
+const JUNCTION_RADIUS = 2.8; // hold radius around nodes to prevent overlap
+
 function spawnMovingTruck(truck, rerouteMap) {
   const delayed = (truck.status && String(truck.status).toLowerCase() === 'delayed') ||
                   (truck.delay_hours || 0) > 0;
 
-  let pathIDs = null;
-  if (rerouteMap.has(truck.id)) {
-    pathIDs = rerouteMap.get(truck.id);
-  } else {
-    pathIDs = defaultPathIDs(truck.origin, truck.destination);
-  }
+  let pathIDs;
+  if (rerouteMap.has(truck.id)) pathIDs = rerouteMap.get(truck.id);
+  else pathIDs = defaultPathIDs(truck.origin, truck.destination);
 
-  // ensure path starts/ends correctly
   if (pathIDs[0] !== truck.origin) pathIDs.unshift(truck.origin);
-  const last = pathIDs[pathIDs.length - 1];
-  if (last !== truck.destination) pathIDs.push(truck.destination);
+  if (pathIDs[pathIDs.length - 1] !== truck.destination) pathIDs.push(truck.destination);
 
-  // base polyline from warehouse centers
-  const basePath = idsToPoints(pathIDs);
-
-  // smooth corners (rounded turns)
-  const smoothPts = smoothPath(basePath, 2.2, 8);
+  const poly = idsToPoints(pathIDs);
+  const smoothPts = smoothPath(poly, 2.2, 8);
   if (smoothPts.length < 2) return;
 
   const mesh = createTruckMesh(delayed);
   mesh.position.copy(smoothPts[0]);
   trucksGroup.add(mesh);
 
-  const SPEED = delayed ? 2.0 : 3.2; // units/sec; delayed slightly slower
+  const SPEED = delayed ? 2.0 : 3.2;
 
   movingTrucks.push({
     id: truck.id,
     mesh,
     wheels: mesh.userData.wheels || [],
-    path: smoothPts,      // densified smooth path
-    segIdx: 0,            // segment start index
-    segT: 0,              // 0..1 along current segment
-    direction: 1,         // +1 forward, -1 backward (ping-pong)
+    path: smoothPts,
+    segIdx: 0,
+    segT: 0,
+    direction: 1,  // ping-pong
     speed: SPEED,
     wheelRadius: mesh.userData.wheelRadius || 0.28,
-    lastPos: smoothPts[0].clone()
+    lastPos: smoothPts[0].clone(),
+    pausedUntil: 0 // ms timestamp if temporarily held at junction
   });
 }
 
-function lengthOfSeg(a, b) { return a.distanceTo(b); }
+// Helper: get scalar progress (distance along current segment)
+function segmentProgress(t) {
+  const a = t.path[t.segIdx];
+  const b = t.path[t.segIdx + t.direction];
+  if (!a || !b) return 0;
+  const segLen = a.distanceTo(b);
+  return t.segT * segLen;
+}
+
+// Simple junction detector: is pos near any node?
+function nearJunction(pos) {
+  for (const key in WH_POS) {
+    if (pos.distanceTo(WH_POS[key]) < JUNCTION_RADIUS) return true;
+  }
+  return false;
+}
 
 // ============ Scenario loader ============
 async function loadScenario(file, labelFromCaller) {
@@ -459,7 +484,7 @@ async function loadScenario(file, labelFromCaller) {
     while (trucksGroup.children.length) trucksGroup.remove(trucksGroup.children[0]);
     movingTrucks = [];
 
-    // Explicit reroutes: truckId -> ["WH1","WH3","WH2"]
+    // Explicit reroutes
     const rerouteMap = new Map();
     if (Array.isArray(data.reroutes)) {
       for (const r of data.reroutes) {
@@ -469,7 +494,7 @@ async function loadScenario(file, labelFromCaller) {
       }
     }
 
-    // Spawn movers
+    // Spawn
     let total = 0, delayedCount = 0;
     (data.trucks || []).forEach(tr => {
       const delayed = (tr.status && String(tr.status).toLowerCase() === 'delayed') ||
@@ -505,14 +530,32 @@ window.loadScenario = loadScenario;
 
 // ============ Animate/render loop ============
 const clock = new THREE.Clock();
-const tmpDir = new THREE.Vector3();
 
 function updateMovingTrucks(dt) {
+  const now = performance.now();
+
+  // ---- 1) Junction holding: pause trucks if another is in the junction ----
   for (const t of movingTrucks) {
+    if (t.pausedUntil && now < t.pausedUntil) continue; // still paused
+
+    // If truck is very near a junction and another truck is also near, impose a short pause
+    const pos = t.mesh.position;
+    if (nearJunction(pos)) {
+      const someoneElse = movingTrucks.find(o => o !== t && o.mesh.position.distanceTo(pos) < JUNCTION_RADIUS * 0.9);
+      if (someoneElse) {
+        t.pausedUntil = now + 400; // 0.4s pause to avoid overlap at nodes
+      }
+    }
+  }
+
+  // ---- 2) Advance + convoy spacing on same segment/direction ----
+  for (const t of movingTrucks) {
+    if (t.pausedUntil && now < t.pausedUntil) continue; // paused at junction
+
     const pts = t.path;
     if (!pts || pts.length < 2) continue;
 
-    // Segment endpoints according to direction
+    // Determine segment endpoints by direction
     let a = pts[t.segIdx];
     let b = pts[t.segIdx + t.direction];
 
@@ -520,20 +563,54 @@ function updateMovingTrucks(dt) {
     if (!b) {
       t.direction *= -1;
       b = pts[t.segIdx + t.direction];
-      if (!b) continue; // safety
+      if (!b) continue;
     }
 
     const segLen = Math.max(0.0001, a.distanceTo(b));
-    const distThisFrame = t.speed * dt;
-    let dT = distThisFrame / segLen;
+    let dT = (t.speed * dt) / segLen;
+
+    // --- Convoy spacing: find the nearest truck ahead on same segment/direction
+    const ahead = movingTrucks
+      .filter(o =>
+        o !== t &&
+        o.path === t.path &&                  // (same array) unlikely; so compare geometry instead
+        o.segIdx === t.segIdx &&
+        o.direction === t.direction
+      );
+
+    // If same-array check won't match (different arrays), we approximate same segment by geometry:
+    const aheadGeom = movingTrucks.filter(o => {
+      if (o === t) return false;
+      const oa = o.path[o.segIdx], ob = o.path[o.segIdx + o.direction];
+      if (!oa || !ob) return false;
+      // same segment if both endpoints are very close
+      return (oa.distanceTo(a) < 0.01 && ob.distanceTo(b) < 0.01 && o.direction === t.direction);
+    });
+
+    const candidates = ahead.concat(aheadGeom);
+
+    if (candidates.length) {
+      const myProg = segmentProgress(t);
+      let minGap = Infinity;
+      for (const o of candidates) {
+        const oProg = segmentProgress(o);
+        if (oProg > myProg) {
+          const gap = oProg - myProg;
+          if (gap < minGap) minGap = gap;
+        }
+      }
+      if (minGap < MIN_GAP) {
+        // reduce advancement to maintain spacing
+        dT *= Math.max(0.2, minGap / MIN_GAP * 0.6);
+      }
+    }
+
     t.segT += dT;
 
     if (t.segT >= 1) {
-      // advance to next segment in current direction
       t.segIdx += t.direction;
       t.segT -= 1;
 
-      // flip at ends and clamp indices
       if (t.segIdx <= 0) {
         t.segIdx = 0;
         t.direction = 1;
@@ -541,7 +618,6 @@ function updateMovingTrucks(dt) {
         t.segIdx = pts.length - 1;
         t.direction = -1;
       }
-
       a = pts[t.segIdx];
       b = pts[t.segIdx + t.direction] || a;
     }
@@ -549,18 +625,16 @@ function updateMovingTrucks(dt) {
     const pos = new THREE.Vector3().lerpVectors(a, b, t.segT);
     t.mesh.position.copy(pos);
 
-    // Orient along tangent (smooth heading through curves)
+    // Orient along tangent (always face direction of motion) — precise on curves
     tmpDir.subVectors(b, a).normalize();
     const target = new THREE.Vector3().addVectors(pos, tmpDir);
     t.mesh.lookAt(target);
 
-    // Wheel spin based on distance travelled this frame
+    // Wheel spin proportional to distance
     const deltaDist = pos.distanceTo(t.lastPos);
     if (t.wheels && t.wheels.length && t.wheelRadius > 0) {
       const angle = deltaDist / t.wheelRadius; // radians
-      for (const w of t.wheels) {
-        w.rotation.x -= angle; // negative to match forward motion
-      }
+      for (const w of t.wheels) w.rotation.x -= angle;
     }
     t.lastPos.copy(pos);
   }
@@ -570,13 +644,21 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = clock.getDelta();
   updateMovingTrucks(dt);
-  renderer.render(scene, camera);
+  renderer.render(scene, orthoCam);
 }
 animate();
 
-// Handle window resize
+// Handle window resize (preserve ortho framing)
 window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  if (orthoCam) {
+    const aspect = window.innerWidth / window.innerHeight;
+    const halfH = MAP_H / 2;
+    const halfW = halfH * aspect;
+    orthoCam.left = -halfW;
+    orthoCam.right = halfW;
+    orthoCam.top = halfH;
+    orthoCam.bottom = -halfH;
+    orthoCam.updateProjectionMatrix();
+  }
 });
