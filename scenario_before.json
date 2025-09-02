@@ -87,5 +87,13 @@
       "status": "On-Time",
       "delay_hours": 0
     }
-  ]
+  ],
+  "commentary": {
+    "static": "Baseline flow: 3 warehouses (Delhi, Mumbai, Bangalore) dispatch 10 trucks on primary routes. Operations largely stable with only one delayed truck (T4).",
+    "timeline": [
+      { "delay_ms": 0,   "msg": "All warehouses operating at expected throughput levels." },
+      { "delay_ms": 800, "msg": "10 trucks dispatched. 9 are on-time, 1 delayed (T4 from Bangalore to Mumbai)." },
+      { "delay_ms": 1500, "msg": "No network-level disruptions detected. Inventory and flows are within tolerance bands." }
+    ]
+  }
 }
