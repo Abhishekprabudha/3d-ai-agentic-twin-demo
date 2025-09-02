@@ -9,20 +9,41 @@ const light = new THREE.AmbientLight(0xffffff, 1);
 scene.add(light);
 camera.position.z = 30;  // pull back to see everything
 
-// ============ Commentary engine ============
+// ============ Commentary engine (with always-on TTS) ============
 const logEl = document.getElementById('commentaryLog');
 let t0 = performance.now();
+
+// Web Speech API (voice always on; will start once user clicks a toggle)
+const synth = window.speechSynthesis;
+const ttsSupported = typeof synth !== 'undefined';
 
 function nowSec() { return ((performance.now() - t0) / 1000).toFixed(1); }
 function clearLog() {
   if (logEl) logEl.textContent = '';
   t0 = performance.now();
+  // Stop ongoing speech when switching scenarios
+  if (ttsSupported) synth.cancel();
 }
-function log(msg) {
+function speakLine(text) {
+  if (!ttsSupported) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = 1;   // 0.1 to 10
+  u.pitch = 1;  // 0 to 2
+  u.volume = 1; // 0 to 1
+  // Choose a voice if available (fallback to default)
+  const voices = synth.getVoices();
+  if (voices && voices.length) {
+    // Prefer an English voice where available; adjust to your locale if needed
+    const en = voices.find(v => /en/i.test(v.lang)) || voices[0];
+    u.voice = en;
+  }
+  synth.speak(u);
+}
+function log(msg, speak = true) {
   const line = `[t=${nowSec()}s] ${msg}`;
   if (logEl) logEl.textContent += line + '\n';
-  // Also print to console for dev convenience
   console.log(line);
+  if (speak) speakLine(msg);
 }
 
 // Optional helpers to use JSON-provided narration
@@ -41,7 +62,7 @@ async function replayTimeline(data) {
   for (const step of data.commentary.timeline) {
     const delayMs = Math.max(0, step.delay_ms || 0);
     await new Promise(r => setTimeout(r, delayMs));
-    if (typeof step.msg === 'string') log(step.msg);
+    if (typeof step.msg === 'string') log(step.msg, true);
   }
 }
 
@@ -59,7 +80,7 @@ const warehouseTexture = textureLoader.load('warehouse_texture.png', () => {
   buildWarehouses();
   buildRoads();
   log('Warehouses and roads initialized');
-  // Load the initial view
+  // Load the initial view (user will usually click toggles anyway; this call also enables speech)
   loadScenario('scenario_before.json', 'Normal operations');
 });
 
@@ -104,7 +125,7 @@ function drawTruckAt(pos, delayed) {
   trucksGroup.add(m);
 }
 
-// ============ Scenario loader with narration ============
+// ============ Scenario loader with narration + TTS ============
 async function loadScenario(file, labelFromCaller) {
   try {
     clearLog();
@@ -157,7 +178,7 @@ async function loadScenario(file, labelFromCaller) {
       log(`Reroutes applied: ${data.reroutes.length}`);
       for (const r of data.reroutes) {
         const reason = r.reason ? ` (${r.reason})` : '';
-        const path = Array.isArray(r.path) ? ` → ${r.path.join(' → ')}` : '';
+        const path = Array.isArray(r.path) ? ` via ${r.path.join(' → ')}` : '';
         log(`Truck ${r.truckId} rerouted${reason}${path}`);
       }
       log('Network stabilized after corrections.');
