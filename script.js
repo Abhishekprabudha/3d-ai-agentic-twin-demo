@@ -1,10 +1,8 @@
 // ===========================
-// 3D AI Agentic Twin — Script (Full)
-// Top-down India map (robust loader) + orthographic camera
-// India lat/lon → world projection; warehouses/labels/roads
-// Real truck models + curved turns + continuous ping-pong + wheel spin
-// Collision controls (convoy spacing + junction hold)
-// Commentary + humanoid TTS (FIFO)
+// 3D AI Agentic Twin — Phase 1 (Baseline on India Map)
+// Top-down map (robust loader) + warehouses/labels
+// Straight-line triangle routes + continuous ping-pong movement
+// Real truck meshes + wheel spin + narration + convoy spacing
 // ===========================
 
 // ---------- Scene & Renderer ----------
@@ -13,16 +11,17 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
-// Global camera (orthographic, top-down)
+// ---------- Camera (Top-down Orthographic) ----------
 let orthoCam;
+let MAP_W = 140, MAP_H = 140; // updated to map aspect on load
 function setupCamera() {
   const aspect = window.innerWidth / window.innerHeight;
   const halfH = MAP_H / 2;
   const halfW = halfH * aspect;
   if (!orthoCam) {
     orthoCam = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, 0.1, 1000);
-    orthoCam.position.set(0, 200, 0); // looking straight down
-    orthoCam.up.set(0, 0, -1);        // keep +Z down the screen for map-like feel
+    orthoCam.position.set(0, 200, 0);
+    orthoCam.up.set(0, 0, -1);  // makes +Z point down on screen (map-like)
     orthoCam.lookAt(0, 0, 0);
   } else {
     orthoCam.left = -halfW;
@@ -35,15 +34,11 @@ function setupCamera() {
 
 scene.add(new THREE.AmbientLight(0xffffff, 1));
 
-// ---------- Commentary ----------
+// ---------- Commentary + TTS ----------
 const logEl = document.getElementById("commentaryLog");
 let t0 = performance.now();
 function nowSec() { return ((performance.now() - t0) / 1000).toFixed(1); }
-function clearLog() {
-  if (logEl) logEl.textContent = "";
-  t0 = performance.now();
-  ttsFlushQueue(true);
-}
+function clearLog() { if (logEl) logEl.textContent = ""; t0 = performance.now(); ttsFlushQueue(true); }
 function log(msg, speak = true) {
   const line = `[t=${nowSec()}s] ${msg}`;
   if (logEl) logEl.textContent += line + "\n";
@@ -63,11 +58,10 @@ async function replayTimeline(data) {
   }
 }
 
-// ---------- Humanoid TTS (FIFO) ----------
+// Humanoid TTS (FIFO)
 const synth = window.speechSynthesis;
 const ttsSupported = typeof synth !== "undefined";
 let VOICE = null, ttsQueue = [], ttsPlaying = false;
-
 const VOICE_PREFERENCES = [
   /en-IN/i, /English.+India/i, /Natural/i, /Neural/i,
   /Microsoft.+Online/i, /Microsoft.+(Aria|Jenny|Guy|Davis|Ana)/i,
@@ -76,7 +70,7 @@ const VOICE_PREFERENCES = [
 function pickBestVoice() {
   if (!ttsSupported) return null;
   const voices = synth.getVoices();
-  if (!voices || !voices.length) return null;
+  if (!voices?.length) return null;
   for (const pref of VOICE_PREFERENCES) {
     const v = voices.find(vv => pref.test(vv.name) || pref.test(vv.lang));
     if (v) return v;
@@ -88,25 +82,17 @@ if (ttsSupported) {
   if (!VOICE) synth.onvoiceschanged = () => { VOICE = pickBestVoice(); };
 }
 function normalizeForSpeech(text) {
-  return String(text)
-    .replace(/\bETA\b/gi, "E T A")
-    .replace(/\bAI\b/gi, "A I")
-    .replace(/WH(\d+)/g, "Warehouse $1")
-    .replace(/(\d+)%/g, "$1 percent")
-    .replace(/->|→/g, " to ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return String(text).replace(/\bETA\b/gi, "E T A")
+    .replace(/\bAI\b/gi, "A I").replace(/WH(\d+)/g, "Warehouse $1")
+    .replace(/(\d+)%/g, "$1 percent").replace(/->|→/g, " to ")
+    .replace(/\s+/g, " ").trim();
 }
 function chunkForSpeech(text) {
   return normalizeForSpeech(text).split(/(?<=[.!?;])\s+|(?<=,)\s+/).filter(Boolean);
 }
 function humanizeRate(base=1.0){ return Math.max(0.85, Math.min(1.15, base + (Math.random()-0.5)*0.08)); }
 function humanizePitch(base=1.0){ return Math.max(0.9, Math.min(1.2, base + (Math.random()-0.5)*0.06)); }
-function ttsEnqueue(text) {
-  if (!ttsSupported) return;
-  chunkForSpeech(text).forEach(p => ttsQueue.push(p));
-  if (!ttsPlaying) ttsPlayNext();
-}
+function ttsEnqueue(text) { if (!ttsSupported) return; chunkForSpeech(text).forEach(p => ttsQueue.push(p)); if (!ttsPlaying) ttsPlayNext(); }
 function ttsPlayNext() {
   if (!ttsSupported) return;
   if (!ttsQueue.length) { ttsPlaying = false; return; }
@@ -114,24 +100,17 @@ function ttsPlayNext() {
   const part = ttsQueue.shift();
   const u = new SpeechSynthesisUtterance(part);
   if (VOICE) u.voice = VOICE;
-  u.rate = humanizeRate(0.98);
-  u.pitch = humanizePitch(1.02);
-  u.volume = 1.0;
+  u.rate = humanizeRate(0.98); u.pitch = humanizePitch(1.02); u.volume = 1.0;
   u.onend = () => { ttsPlayNext(); };
   synth.speak(u);
 }
 function ttsFlushQueue(cancel=false){ ttsQueue=[]; ttsPlaying=false; if (cancel && ttsSupported) synth.cancel(); }
 
-// ---------- India Map & Projection ----------
-const textureLoader = new THREE.TextureLoader();
-const MAP_IMAGE_PATH = "india_map.png?v=2"; // bump v if GH Pages caches
-let MAP_W = 140, MAP_H = 140;               // updated to image aspect on load
+// ---------- India Map + Projection ----------
+const MAP_IMAGE_PATH = "india_map.png?v=3"; // bump v if GH Pages caches
 let mapPlane;
 
-// India bounds (approx); equirectangular-ish mapping
-const BOUNDS = { latMin: 8, latMax: 37, lonMin: 68, lonMax: 97 };
-
-// Project lat/lon → world (x,z)
+const BOUNDS = { latMin: 8, latMax: 37, lonMin: 68, lonMax: 97 }; // approx India bounds
 function projectLatLon(lat, lon) {
   const u = (lon - BOUNDS.lonMin) / (BOUNDS.lonMax - BOUNDS.lonMin);
   const v = 1 - (lat - BOUNDS.latMin) / (BOUNDS.latMax - BOUNDS.latMin);
@@ -140,14 +119,14 @@ function projectLatLon(lat, lon) {
   return new THREE.Vector3(x, 0, z);
 }
 
-// Cities/warehouses (real coords)
+// Cities (warehouses) — real coords
 const CITY = {
   WH1: { name: "WH1 — Delhi",     lat: 28.6139, lon: 77.2090 },
   WH2: { name: "WH2 — Mumbai",    lat: 19.0760, lon: 72.8777 },
   WH3: { name: "WH3 — Bangalore", lat: 12.9716, lon: 77.5946 }
 };
 
-// ---------- Groups ----------
+// Groups
 const warehousesGroup = new THREE.Group();
 const roadsGroup = new THREE.Group();
 const LABELS = new THREE.Group();
@@ -157,7 +136,7 @@ scene.add(warehousesGroup, roadsGroup, LABELS, trucksGroup);
 // Current projected positions
 let WH_POS = {};
 
-// ---------- Labels ----------
+// Labels
 function makeTextSprite(text, opacity=0.82) {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
@@ -170,17 +149,13 @@ function makeTextSprite(text, opacity=0.82) {
   ctx.font = `bold ${fontSize}px system-ui, Segoe UI, Roboto, sans-serif`;
   ctx.fillStyle = `rgba(10,10,11,${opacity})`;
   ctx.fillRect(0,0,w,h);
-  ctx.strokeStyle = "rgba(255,255,255,0.25)";
-  ctx.strokeRect(0,0,w,h);
-  ctx.fillStyle = "#e6e6e6";
-  ctx.textBaseline = "middle";
-  ctx.fillText(text, pad, h/2);
+  ctx.strokeStyle = "rgba(255,255,255,0.25)"; ctx.strokeRect(0,0,w,h);
+  ctx.fillStyle = "#e6e6e6"; ctx.textBaseline = "middle"; ctx.fillText(text, pad, h/2);
 
   const tex = new THREE.CanvasTexture(canvas);
   const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest:false });
   const spr = new THREE.Sprite(mat);
-  const scale = 0.08; spr.scale.set(w*scale, h*scale, 1);
-  spr.renderOrder = 999;
+  const scale = 0.08; spr.scale.set(w*scale, h*scale, 1); spr.renderOrder = 999;
   return spr;
 }
 function buildLabels() {
@@ -195,11 +170,7 @@ function buildLabels() {
     const fromC = new THREE.Vector3().subVectors(basePos, centroid).setY(0);
     if (fromC.lengthSq() < 1e-6) fromC.set(1,0,0);
     const dir = fromC.clone().normalize();
-    if (angle !== 0) {
-      const c=Math.cos(angle), s=Math.sin(angle);
-      const x=dir.x, z=dir.z;
-      dir.x = x*c - z*s; dir.z = x*s + z*c;
-    }
+    if (angle !== 0) { const c=Math.cos(angle), s=Math.sin(angle); const x=dir.x, z=dir.z; dir.x=x*c - z*s; dir.z=x*s + z*c; }
     dir.multiplyScalar(pushOut);
     const p = basePos.clone().add(dir);
     const spr = makeTextSprite(text, 0.8);
@@ -208,32 +179,27 @@ function buildLabels() {
   }
   place(CITY.WH1.name, WH_POS.WH1, 7.0,  0.10);
   place(CITY.WH2.name, WH_POS.WH2, 7.0, -0.10);
-  place(CITY.WH3.name, WH_POS.WH3, 8.2,  0.20);
+  place(CITY.WH3.name, WH_POS.WH3, 8.2,  0.20); // push WH3 farther to avoid overlap
 }
 
-// ---------- Warehouses & Roads ----------
+// Warehouses & Roads
 function createWarehouseMesh(pos) {
   const geo = new THREE.CylinderGeometry(2.5, 2.5, 0.6, 24);
   const mat = new THREE.MeshBasicMaterial({ color: 0x3c82f6 });
-  const m = new THREE.Mesh(geo, mat);
-  m.position.copy(pos); m.position.y = 0.3;
-  return m;
+  const m = new THREE.Mesh(geo, mat); m.position.copy(pos); m.position.y = 0.3; return m;
 }
 function buildWarehouses() {
-  warehousesGroup.clear();
-  WH_POS = {};
+  warehousesGroup.clear(); WH_POS = {};
   for (const id of Object.keys(CITY)) {
     const pos = projectLatLon(CITY[id].lat, CITY[id].lon);
-    WH_POS[id] = pos;
-    warehousesGroup.add(createWarehouseMesh(pos));
+    WH_POS[id] = pos; warehousesGroup.add(createWarehouseMesh(pos));
   }
 }
 function drawRoad(a, b) {
-  const material = new THREE.LineBasicMaterial({ color: 0x505050 });
+  const material = new THREE.LineBasicMaterial({ color: 0x555555 });
   const points = [a.clone().add(new THREE.Vector3(0,0.01,0)), b.clone().add(new THREE.Vector3(0,0.01,0))];
   const geom = new THREE.BufferGeometry().setFromPoints(points);
-  const line = new THREE.Line(geom, material); line.renderOrder = 1;
-  roadsGroup.add(line);
+  const line = new THREE.Line(geom, material); line.renderOrder = 1; roadsGroup.add(line);
 }
 function buildRoads() {
   roadsGroup.clear();
@@ -242,54 +208,48 @@ function buildRoads() {
   drawRoad(WH_POS.WH3, WH_POS.WH1);
 }
 
-// ---------- Map bootstrap: placeholder now, swap texture when ready ----------
+// ---------- Map bootstrap: placeholder first, hot-swap texture ----------
 setupCamera();
-// placeholder plane so the scene isn’t blank
+// placeholder plane so nothing is blank
 (function buildPlaceholder(){
   const planeGeo = new THREE.PlaneGeometry(MAP_W, MAP_H);
   const planeMat = new THREE.MeshBasicMaterial({ color: 0x0f1115 });
-  mapPlane = new THREE.Mesh(planeGeo, planeMat);
-  mapPlane.rotation.x = -Math.PI/2; mapPlane.position.y = 0;
-  scene.add(mapPlane);
+  const plane = new THREE.Mesh(planeGeo, planeMat);
+  plane.rotation.x = -Math.PI/2; plane.position.y = 0;
+  mapPlane = plane; scene.add(mapPlane);
 })();
-
-// Build network immediately on placeholder
 buildWarehouses(); buildRoads(); buildLabels();
 log("Bootstrapped scene with placeholder map. Loading india_map.png…");
 loadScenario("scenario_before.json", "Normal operations");
 
-// Load the real map image and hot-swap at runtime
-const img = new Image();
-img.onload = () => {
+// Load actual image and swap it in
+const mapImg = new Image();
+mapImg.onload = () => {
   try {
-    const tex = new THREE.Texture(img); tex.needsUpdate = true;
-
-    const aspect = img.width / img.height;
+    const tex = new THREE.Texture(mapImg); tex.needsUpdate = true;
+    const aspect = mapImg.width / mapImg.height;
     MAP_W = 140 * aspect; MAP_H = 140;
 
-    // swap plane geometry & material
     const newGeo = new THREE.PlaneGeometry(MAP_W, MAP_H);
     mapPlane.geometry.dispose(); mapPlane.geometry = newGeo;
-    mapPlane.material.dispose(); mapPlane.material = new THREE.MeshBasicMaterial({ map: tex });
+    if (mapPlane.material.map) mapPlane.material.map.dispose();
+    mapPlane.material.dispose();
+    mapPlane.material = new THREE.MeshBasicMaterial({ map: tex });
 
-    // Recompute projections & rebuild network; reload scenario so trucks align
     setupCamera();
     buildWarehouses(); buildRoads(); buildLabels();
-    log(`Map loaded: ${img.width}×${img.height}, aspect=${aspect.toFixed(3)}. Rebuilding network.`);
-    // Reload current scenario (default to before.json again)
+    log(`Map loaded: ${mapImg.width}×${mapImg.height} (aspect ${aspect.toFixed(3)}). Rebuilt network.`);
+    // restart the default scenario so trucks align precisely after resize
     loadScenario("scenario_before.json", "Normal operations");
   } catch (e) {
     console.error("Error applying india_map.png texture:", e);
     log("Loaded india_map.png but failed to apply texture. Keeping placeholder.");
   }
 };
-img.onerror = (e) => {
-  console.error("Failed to load india_map.png", e);
-  log("Could not load india_map.png — check name/path/casing. Placeholder map in use.");
-};
-img.src = MAP_IMAGE_PATH; // cache-busted above with ?v=2
+mapImg.onerror = (e) => { console.error("Failed to load india_map.png", e); log("Could not load india_map.png — using placeholder.", true); };
+mapImg.src = MAP_IMAGE_PATH; // cache-bust with ?v=3 above
 
-// ---------- Movement / Graph ----------
+// ---------- Movement (straight-line segments; ping-pong) ----------
 const ADJ = { WH1: ["WH2","WH3"], WH2: ["WH1","WH3"], WH3: ["WH1","WH2"] };
 
 function defaultPathIDs(origin, destination) {
@@ -298,39 +258,15 @@ function defaultPathIDs(origin, destination) {
   if (origin !== "WH2" && destination !== "WH2") return [origin, "WH2", destination];
   return [origin, destination];
 }
-function idsToPoints(ids) { return ids.map(id => WH_POS[id]).filter(Boolean).map(p=>new THREE.Vector3(p.x,0.5,p.z)); }
+function idsToPoints(ids) { return ids.map(id => WH_POS[id]).filter(Boolean).map(p => new THREE.Vector3(p.x, 0.5, p.z)); }
 
-// Quadratic Bezier smoothing for rounded turns
-function smoothPath(basePts, radiusLimit=2.2, samples=8) {
-  if (!basePts || basePts.length < 2) return basePts || [];
-  const out = [basePts[0].clone()];
-  for (let i=1;i<basePts.length-1;i++){
-    const p0=basePts[i-1], p1=basePts[i], p2=basePts[i+1];
-    const vIn=new THREE.Vector3().subVectors(p1,p0);
-    const vOut=new THREE.Vector3().subVectors(p2,p1);
-    const lenIn=vIn.length(), lenOut=vOut.length();
-    if (lenIn<1e-6||lenOut<1e-6){ out.push(p1.clone()); continue; }
-    vIn.normalize(); vOut.normalize();
-    const cut = Math.min(radiusLimit, 0.4*Math.min(lenIn,lenOut));
-    const pIn = new THREE.Vector3().copy(p1).addScaledVector(vIn,-cut);
-    const pOut= new THREE.Vector3().copy(p1).addScaledVector(vOut, cut);
-    const prev = out[out.length-1]; if (!prev.equals(pIn)) out.push(pIn);
-    for (let s=1;s<samples;s++){
-      const t=s/samples, a=(1-t)*(1-t), b=2*(1-t)*t, c=t*t;
-      const q=new THREE.Vector3(
-        a*pIn.x + b*p1.x + c*pOut.x,
-        0.5,
-        a*pIn.z + b*p1.z + c*pOut.z
-      );
-      out.push(q);
-    }
-    out.push(pOut);
-  }
-  out.push(basePts[basePts.length-1].clone());
-  return out;
+function smoothPath(basePts) {
+  // Phase-1: keep it simple — just return straight polyline so it’s obvious & robust.
+  // (We’ll replace with real road polylines in Phase-2.)
+  return basePts;
 }
 
-// ---------- Truck model ----------
+// Truck mesh
 function createTruckMesh(delayed) {
   const group = new THREE.Group();
   const bodyColor = delayed ? 0xff4444 : 0x00b050;
@@ -352,41 +288,36 @@ function createTruckMesh(delayed) {
   addWheel(-2.2,0.7); addWheel(-2.2,-0.7);
   addWheel(-0.6,0.7); addWheel(-0.6,-0.7);
   addWheel( 1.0,0.7); addWheel( 1.0,-0.7);
+
   group.userData.wheels = wheels; group.userData.wheelRadius = 0.28;
   return group;
 }
 
-// ---------- Movement state ----------
+// Movement state
 let movingTrucks = []; // {id, mesh, wheels[], path, segIdx, segT, direction, speed, wheelRadius, lastPos, pausedUntil}
 const tmpDir = new THREE.Vector3();
 const MIN_GAP = 2.2;         // convoy spacing on same segment
-const JUNCTION_RADIUS = 2.8; // hold radius near nodes
+const JUNCTION_RADIUS = 2.8; // junction hold radius
 
 function spawnMovingTruck(truck, rerouteMap) {
   const delayed = (truck.status && String(truck.status).toLowerCase()==='delayed') || (truck.delay_hours||0)>0;
   let pathIDs = rerouteMap.get(truck.id) || defaultPathIDs(truck.origin, truck.destination);
   if (pathIDs[0] !== truck.origin) pathIDs.unshift(truck.origin);
   if (pathIDs[pathIDs.length-1] !== truck.destination) pathIDs.push(truck.destination);
+
   const poly = idsToPoints(pathIDs);
-  const smoothPts = smoothPath(poly, 2.2, 8);
-  if (smoothPts.length<2) return;
+  const pts = smoothPath(poly);
+  if (pts.length < 2) return;
 
   const mesh = createTruckMesh(delayed);
-  mesh.position.copy(smoothPts[0]);
+  mesh.position.copy(pts[0]);
   trucksGroup.add(mesh);
 
   movingTrucks.push({
-    id: truck.id,
-    mesh,
-    wheels: mesh.userData.wheels||[],
-    path: smoothPts,
-    segIdx: 0,
-    segT: 0,
-    direction: 1,
-    speed: delayed ? 2.0 : 3.2,
-    wheelRadius: mesh.userData.wheelRadius||0.28,
-    lastPos: smoothPts[0].clone(),
-    pausedUntil: 0
+    id: truck.id, mesh, wheels: mesh.userData.wheels || [],
+    path: pts, segIdx: 0, segT: 0, direction: 1,
+    speed: delayed ? 2.0 : 3.2, wheelRadius: mesh.userData.wheelRadius || 0.28,
+    lastPos: pts[0].clone(), pausedUntil: 0
   });
 }
 
@@ -447,7 +378,7 @@ async function loadScenario(file, labelFromCaller) {
 }
 window.loadScenario = loadScenario;
 
-// ---------- Animation loop ----------
+// ---------- Animation Loop ----------
 const clock = new THREE.Clock();
 function updateMovingTrucks(dt) {
   const now = performance.now();
@@ -458,29 +389,22 @@ function updateMovingTrucks(dt) {
     const pos = t.mesh.position;
     if (nearJunction(pos)) {
       const other = movingTrucks.find(o => o!==t && o.mesh.position.distanceTo(pos) < JUNCTION_RADIUS*0.9);
-      if (other) t.pausedUntil = now + 400; // brief pause
+      if (other) t.pausedUntil = now + 400;
     }
   }
 
-  // Advance w/ convoy spacing
+  // Advance with convoy spacing
   for (const t of movingTrucks) {
     if (t.pausedUntil && now < t.pausedUntil) continue;
 
-    const pts = t.path;
-    if (!pts || pts.length<2) continue;
-
-    let a = pts[t.segIdx];
-    let b = pts[t.segIdx + t.direction];
-    if (!b) {
-      t.direction *= -1;
-      b = pts[t.segIdx + t.direction];
-      if (!b) continue;
-    }
+    const pts = t.path; if (!pts || pts.length < 2) continue;
+    let a = pts[t.segIdx], b = pts[t.segIdx + t.direction];
+    if (!b) { t.direction *= -1; b = pts[t.segIdx + t.direction]; if (!b) continue; }
 
     const segLen = Math.max(0.0001, a.distanceTo(b));
     let dT = (t.speed * dt) / segLen;
 
-    // Convoy spacing on same segment/direction (geometry match)
+    // Convoy spacing: slow if too close to truck ahead on same segment & direction
     const candidates = movingTrucks.filter(o => {
       if (o===t) return false;
       const oa=o.path[o.segIdx], ob=o.path[o.segIdx + o.direction];
@@ -498,10 +422,8 @@ function updateMovingTrucks(dt) {
     }
 
     t.segT += dT;
-
     if (t.segT >= 1) {
-      t.segIdx += t.direction;
-      t.segT -= 1;
+      t.segIdx += t.direction; t.segT -= 1;
       if (t.segIdx <= 0) { t.segIdx = 0; t.direction = 1; }
       else if (t.segIdx >= pts.length-1) { t.segIdx = pts.length-1; t.direction = -1; }
       a = pts[t.segIdx]; b = pts[t.segIdx + t.direction] || a;
@@ -510,12 +432,12 @@ function updateMovingTrucks(dt) {
     const pos = new THREE.Vector3().lerpVectors(a, b, t.segT);
     t.mesh.position.copy(pos);
 
-    // Face direction of travel (precise on curves)
+    // Face the direction of travel
     tmpDir.subVectors(b, a).normalize();
     const target = new THREE.Vector3().addVectors(pos, tmpDir);
     t.mesh.lookAt(target);
 
-    // Wheel spin proportional to distance
+    // Wheel spin
     const deltaDist = pos.distanceTo(t.lastPos);
     if (t.wheels?.length && t.wheelRadius > 0) {
       const angle = deltaDist / t.wheelRadius;
