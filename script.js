@@ -1,15 +1,12 @@
 // ===========================
 // 3D AI Agentic Twin — Script
-// With narrated commentary (text + improved human-like TTS)
+// Start-to-finish narrated commentary (text + human-like TTS w/ FIFO queue)
 // ===========================
 
 // ============ Scene setup ============
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(
-  75,
-  window.innerWidth / window.innerHeight,
-  0.1,
-  1000
+  75, window.innerWidth / window.innerHeight, 0.1, 1000
 );
 const renderer = new THREE.WebGLRenderer();
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -17,26 +14,24 @@ document.body.appendChild(renderer.domElement);
 
 const light = new THREE.AmbientLight(0xffffff, 1);
 scene.add(light);
-camera.position.z = 30; // pull back to see everything
+camera.position.z = 30;
 
 // ============ Commentary engine ============
 const logEl = document.getElementById("commentaryLog");
 let t0 = performance.now();
 
-function nowSec() {
-  return ((performance.now() - t0) / 1000).toFixed(1);
-}
+function nowSec() { return ((performance.now() - t0) / 1000).toFixed(1); }
 function clearLog() {
   if (logEl) logEl.textContent = "";
   t0 = performance.now();
-  // stop any ongoing speech so the new scenario starts fresh
-  if (ttsSupported) synth.cancel();
+  // On scenario change, stop any ongoing speech and flush the queue
+  ttsFlushQueue(true);
 }
 function log(msg, speak = true) {
   const line = `[t=${nowSec()}s] ${msg}`;
   if (logEl) logEl.textContent += line + "\n";
   console.log(line);
-  if (speak) speakLine(msg);
+  if (speak) ttsEnqueue(msg);
 }
 
 // Optional helpers to use JSON-provided narration
@@ -59,10 +54,12 @@ async function replayTimeline(data) {
   }
 }
 
-// ============ Improved TTS (human-like) ============
+// ============ Human-like TTS with FIFO queue ============
 const synth = window.speechSynthesis;
 const ttsSupported = typeof synth !== "undefined";
 let VOICE = null;
+let ttsQueue = [];        // array of strings (speech chunks)
+let ttsPlaying = false;   // worker state
 
 // Prefer higher-quality or locale-appropriate voices if available
 const VOICE_PREFERENCES = [
@@ -91,11 +88,7 @@ function pickBestVoice() {
 // voices may load asynchronously
 if (ttsSupported) {
   VOICE = pickBestVoice();
-  if (!VOICE) {
-    synth.onvoiceschanged = () => {
-      VOICE = pickBestVoice();
-    };
-  }
+  if (!VOICE) synth.onvoiceschanged = () => { VOICE = pickBestVoice(); };
 }
 
 // Clean up text for nicer prosody
@@ -126,26 +119,40 @@ function humanizePitch(base = 1.0) {
   return Math.max(0.9, Math.min(1.2, base + (Math.random() - 0.5) * 0.06));
 }
 
-// Speak one log line (cancel backlog, then speak chunks)
-function speakLine(text) {
+// Queue ops
+function ttsEnqueue(text) {
   if (!ttsSupported) return;
   const parts = chunkForSpeech(text);
-  synth.cancel(); // keep it snappy
-  for (const part of parts) {
-    const u = new SpeechSynthesisUtterance(part);
-    if (VOICE) u.voice = VOICE;
-    u.rate = humanizeRate(0.98);
-    u.pitch = humanizePitch(1.02);
-    u.volume = 1.0;
-    synth.speak(u);
-  }
+  for (const p of parts) ttsQueue.push(p);
+  if (!ttsPlaying) ttsPlayNext();
+}
+
+function ttsPlayNext() {
+  if (!ttsSupported) return;
+  if (!ttsQueue.length) { ttsPlaying = false; return; }
+  ttsPlaying = true;
+  const part = ttsQueue.shift();
+  const u = new SpeechSynthesisUtterance(part);
+  if (VOICE) u.voice = VOICE;
+  u.rate = humanizeRate(0.98);
+  u.pitch = humanizePitch(1.02);
+  u.volume = 1.0;
+  u.onend = () => { ttsPlayNext(); };
+  // do NOT cancel here; we want continuous playback
+  synth.speak(u);
+}
+
+function ttsFlushQueue(cancelSpeech = false) {
+  ttsQueue = [];
+  ttsPlaying = false;
+  if (cancelSpeech && ttsSupported) synth.cancel();
 }
 
 // ============ Warehouse positions ============
 const WH_POS = {
   WH1: new THREE.Vector3(-10, 0, 0),
-  WH2: new THREE.Vector3(0, 0, 0),
-  WH3: new THREE.Vector3(10, 0, 0)
+  WH2: new THREE.Vector3(0,   0, 0),
+  WH3: new THREE.Vector3(10,  0, 0)
 };
 
 // ============ Warehouses (persistent) ============
@@ -155,23 +162,20 @@ const warehouseTexture = textureLoader.load("warehouse_texture.png", () => {
   buildWarehouses();
   buildRoads();
   log("Warehouses and roads initialized");
-  // Load the initial view (this first user interaction typically enables audio)
+  // Kick off initial scenario (first user interaction unlocks audio in most browsers)
   loadScenario("scenario_before.json", "Normal operations");
 });
 
 function createWarehouseMesh(pos) {
   const geom = new THREE.BoxGeometry(6, 3, 6); // wider/taller for visibility
-  const mat = new THREE.MeshBasicMaterial({
-    map: warehouseTexture,
-    transparent: true
-  });
+  const mat  = new THREE.MeshBasicMaterial({ map: warehouseTexture, transparent: true });
   const m = new THREE.Mesh(geom, mat);
   m.position.copy(pos);
   return m;
 }
 
 function buildWarehouses() {
-  Object.values(WH_POS).forEach((v) => scene.add(createWarehouseMesh(v)));
+  Object.values(WH_POS).forEach(v => scene.add(createWarehouseMesh(v)));
 }
 
 // Simple straight “roads” between neighboring warehouses
@@ -194,7 +198,7 @@ const trucksGroup = new THREE.Group();
 scene.add(trucksGroup);
 
 const matGreen = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
-const matRed = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+const matRed   = new THREE.MeshBasicMaterial({ color: 0xff0000 });
 
 function drawTruckAt(pos, delayed) {
   const geom = new THREE.SphereGeometry(0.5, 16, 16);
@@ -203,7 +207,7 @@ function drawTruckAt(pos, delayed) {
   trucksGroup.add(m);
 }
 
-// ============ Scenario loader with narration ============
+// ============ Scenario loader (sequenced narration) ============
 async function loadScenario(file, labelFromCaller) {
   try {
     clearLog();
@@ -213,20 +217,18 @@ async function loadScenario(file, labelFromCaller) {
     const data = await res.json();
 
     // clear ONLY trucks (keep warehouses/roads/lights)
-    while (trucksGroup.children.length)
-      trucksGroup.remove(trucksGroup.children[0]);
+    while (trucksGroup.children.length) trucksGroup.remove(trucksGroup.children[0]);
 
     // count how many trucks start at each origin so we can offset vertically
     const perOriginCount = { WH1: 0, WH2: 0, WH3: 0 };
 
-    let total = 0,
-      delayedCount = 0;
-    (data.trucks || []).forEach((tr) => {
+    let total = 0, delayedCount = 0;
+    (data.trucks || []).forEach(tr => {
       const originId = tr.origin;
       const originPos = WH_POS[originId];
       if (!originPos) return; // skip if origin not mapped
 
-      const idx = perOriginCount[originId] || 0;
+      const idx = (perOriginCount[originId] || 0);
       perOriginCount[originId] = idx + 1;
 
       // base below the warehouse, stack each additional truck lower so they don't overlap
@@ -234,39 +236,39 @@ async function loadScenario(file, labelFromCaller) {
       const offset = new THREE.Vector3(0, -idx * 1.2, 0);
       const p = base.add(offset);
 
-      const delayed =
-        (tr.status && String(tr.status).toLowerCase() === "delayed") ||
-        (tr.delay_hours || 0) > 0;
+      const delayed = (tr.status && String(tr.status).toLowerCase() === 'delayed') ||
+                      (tr.delay_hours || 0) > 0;
 
       drawTruckAt(p, delayed);
       total++;
       if (delayed) delayedCount++;
     });
 
+    // Core narration in order
     log(`Warehouses rendered: 3`);
     log(`Trucks rendered: ${total} (delayed=${delayedCount})`);
 
-    // Label for narration (fallback to filename-based)
     const isAfter = /after/i.test(file);
-    const label = labelFromCaller || (isAfter ? "After correction" : "Normal operations");
+    const label = labelFromCaller || (isAfter ? 'After correction' : 'Normal operations');
     writeStaticSummary(data, label);
 
-    // Optional: dynamic timeline narration from JSON
-    replayTimeline(data).catch(() => {});
+    // Timeline (plays with its own delays, still enqueued in FIFO)
+    await replayTimeline(data);
 
-    // Optional: narrate reroutes if provided in "after" JSON
+    // Reroutes narration, if any
     if (Array.isArray(data.reroutes) && data.reroutes.length) {
       log(`Reroutes applied: ${data.reroutes.length}`);
       for (const r of data.reroutes) {
-        const reason = r.reason ? ` (${r.reason})` : "";
-        const path = Array.isArray(r.path) ? ` via ${r.path.join(" → ")}` : "";
+        const reason = r.reason ? ` (${r.reason})` : '';
+        const path = Array.isArray(r.path) ? ` via ${r.path.join(' → ')}` : '';
         log(`Truck ${r.truckId} rerouted${reason}${path}`);
       }
-      log("Network stabilized after corrections.");
+      log('Network stabilized after corrections.');
     }
+
   } catch (err) {
-    console.error("Failed to load scenario:", err);
-    log("Error: Failed to load scenario JSON. Check console for details.");
+    console.error('Failed to load scenario:', err);
+    log('Error: Failed to load scenario JSON. Check console for details.');
   }
 }
 // make available for the buttons in index.html
@@ -280,7 +282,7 @@ function animate() {
 animate();
 
 // Handle window resize
-window.addEventListener("resize", () => {
+window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
