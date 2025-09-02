@@ -87,5 +87,22 @@
       "status": "On-Time",
       "delay_hours": 0
     }
-  ]
+  ],
+  "reroutes": [
+    {
+      "truckId": "T4",
+      "path": ["WH3", "WH1", "WH2"],
+      "reason": "Dock delay at WH3 forced dynamic reroute through Delhi"
+    }
+  ],
+  "commentary": {
+    "static": "Disruption detected and resolved: Truck T4 rerouted via WH1. Inventories rebalanced to stabilize flows.",
+    "timeline": [
+      { "delay_ms": 0,    "msg": "Disruption at Bangalore (WH3) caused 5-hour delay for Truck T4." },
+      { "delay_ms": 700,  "msg": "AI engine recommends rerouting T4 via WH1 to bypass congestion." },
+      { "delay_ms": 1200, "msg": "Truck T4 successfully rerouted. ETA recovered within tolerance." },
+      { "delay_ms": 1700, "msg": "Inventories adjusted: WH1 and WH3 both hold 450 units, WH2 steady at 600." },
+      { "delay_ms": 2200, "msg": "Network stabilized. No further disruptions observed." }
+    ]
+  }
 }
