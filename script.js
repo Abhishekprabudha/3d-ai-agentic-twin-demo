@@ -1,8 +1,8 @@
 // ===========================
-// 3D AI Agentic Twin — Phase 1B (Trucks guaranteed visible)
+// 3D AI Agentic Twin — Phase 1C (movement restored)
 // Map bootstrap + warehouses/labels + straight-line triangle routes
-// Continuous ping-pong movement + convoy spacing + narration
-// Truck meshes are MeshBasicMaterial (always visible) + on-top marker sprite
+// Continuous ping-pong movement, staggered start, convoy spacing, narration
+// Trucks always visible (MeshBasic + on-top marker)
 // ===========================
 
 const scene = new THREE.Scene();
@@ -18,7 +18,7 @@ function setupCamera() {
   const halfH = MAP_H / 2, halfW = halfH * aspect;
   if (!orthoCam) {
     orthoCam = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, 0.1, 2000);
-    orthoCam.position.set(0, 300, 0); // a bit higher
+    orthoCam.position.set(0, 300, 0);
     orthoCam.up.set(0, 0, -1);
     orthoCam.lookAt(0, 0, 0);
   } else {
@@ -29,7 +29,7 @@ function setupCamera() {
 
 scene.add(new THREE.AmbientLight(0xffffff, 1));
 
-// -------- Commentary + TTS (unchanged core) --------
+// -------- Commentary + TTS --------
 const logEl = document.getElementById("commentaryLog");
 let t0 = performance.now();
 function nowSec(){ return ((performance.now()-t0)/1000).toFixed(1); }
@@ -38,7 +38,7 @@ function log(msg, speak=true){ const line=`[t=${nowSec()}s] ${msg}`; if (logEl) 
 function writeStaticSummary(data,label){ if(data?.commentary?.static) log(`${label}: ${data.commentary.static}`); else log(`${label}: ${(data?.warehouses||[]).length||3} warehouses, ${(data?.trucks||[]).length||0} trucks.`); }
 async function replayTimeline(data){ if(!data?.commentary?.timeline) return; for(const step of data.commentary.timeline){ const d=Math.max(0, step.delay_ms||0); await new Promise(r=>setTimeout(r,d)); if(typeof step.msg==="string") log(step.msg,true); } }
 
-// Humanoid TTS (same as before; trimmed)
+// Humanoid TTS (FIFO; compact)
 const synth = window.speechSynthesis; const ttsSupported = typeof synth!=="undefined";
 let VOICE=null, ttsQueue=[], ttsPlaying=false;
 const VOICE_PREFERENCES=[/en-IN/i,/English.+India/i,/Natural/i,/Neural/i,/Microsoft.+Online/i,/Microsoft.+(Aria|Jenny|Guy|Davis|Ana)/i,/Google.+(en-US|en-GB)/i,/en-GB/i,/en-US/i];
@@ -53,7 +53,7 @@ function ttsPlayNext(){ if(!ttsSupported) return; if(!ttsQueue.length){ ttsPlayi
 function ttsFlushQueue(cancel=false){ ttsQueue=[]; ttsPlaying=false; if(cancel&&ttsSupported) synth.cancel(); }
 
 // -------- Map + projection --------
-const MAP_IMAGE_PATH = "india_map.png?v=5";
+const MAP_IMAGE_PATH = "india_map.png?v=7"; // bump if cached
 let mapPlane;
 const BOUNDS = { latMin: 8, latMax: 37, lonMin: 68, lonMax: 97 };
 function projectLatLon(lat, lon){
@@ -135,7 +135,6 @@ buildWarehouses(); buildRoads(); buildLabels();
 log("Bootstrapped scene with placeholder map. Loading india_map.png…");
 loadScenario("scenario_before.json","Normal operations");
 
-// Swap in the actual map image
 const mapImg=new Image();
 mapImg.onload=()=>{
   try{
@@ -156,21 +155,19 @@ mapImg.src = MAP_IMAGE_PATH;
 // -------- Movement along straight segments (ping-pong) --------
 const ADJ = { WH1:["WH2","WH3"], WH2:["WH1","WH3"], WH3:["WH1","WH2"] };
 function defaultPathIDs(o,d){ if(o===d) return [o]; if(ADJ[o]?.includes(d)) return [o,d]; if(o!=="WH2"&&d!=="WH2") return [o,"WH2",d]; return [o,d]; }
-function idsToPoints(ids){ return ids.map(id=>WH_POS[id]).filter(Boolean).map(p=>new THREE.Vector3(p.x, 2.0, p.z)); } // y=2 keeps above map & labels
+function idsToPoints(ids){ return ids.map(id=>WH_POS[id]).filter(Boolean).map(p=>new THREE.Vector3(p.x, 2.0, p.z)); } // y=2 above map
 
-// ---- Trucks (ALWAYS visible materials + on-top marker) ----
+// ---- Trucks (always visible materials + on-top marker) ----
 function createTruckMesh(delayed){
   const group=new THREE.Group();
   const bodyCol= delayed?0xff3b30:0x00c853;
   const cabCol = delayed?0xcc2e28:0x009943;
 
-  // Body/Cab — MeshBasic so lighting can't hide them
   const body=new THREE.Mesh(new THREE.BoxGeometry(3.2,1.6,1.6), new THREE.MeshBasicMaterial({ color:bodyCol }));
   body.position.set(0,1.1,0); group.add(body);
   const cab =new THREE.Mesh(new THREE.BoxGeometry(1.2,1.2,1.3), new THREE.MeshBasicMaterial({ color:cabCol }));
   cab.position.set(-2.2,0.95,0); group.add(cab);
 
-  // Wheels (Basic too)
   const wheelGeo=new THREE.CylinderGeometry(0.34,0.34,0.46,14);
   const wheelMat=new THREE.MeshBasicMaterial({ color:0x111111 });
   const wheels=[];
@@ -179,18 +176,17 @@ function createTruckMesh(delayed){
   addWheel(-1.0, 0.85); addWheel(-1.0,-0.85);
   addWheel( 0.8, 0.85); addWheel( 0.8,-0.85);
 
-  // Thin black edge outlines for body/cab (helps contrast)
   const addEdges=(mesh)=>{ const e=new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), new THREE.LineBasicMaterial({ color:0x000000 })); e.position.copy(mesh.position); e.rotation.copy(mesh.rotation); group.add(e); };
   addEdges(body); addEdges(cab);
 
-  // Always-on-top marker sprite
+  // Always-on-top marker
   const markerCanvas=document.createElement("canvas"); markerCanvas.width=64; markerCanvas.height=64;
   const mctx=markerCanvas.getContext("2d");
   mctx.fillStyle= delayed? "#ff3b30":"#00c853"; mctx.beginPath(); mctx.arc(32,32,12,0,Math.PI*2); mctx.fill();
   mctx.lineWidth=3; mctx.strokeStyle="#111"; mctx.stroke();
   const markerTex=new THREE.CanvasTexture(markerCanvas);
   const marker=new THREE.Sprite(new THREE.SpriteMaterial({ map:markerTex, transparent:true, depthTest:false }));
-  marker.scale.set(2.2,2.2,1); marker.position.set(0,2.6,0); marker.renderOrder=1000; // always visible
+  marker.scale.set(2.2,2.2,1); marker.position.set(0,2.6,0); marker.renderOrder=1000;
   group.add(marker);
 
   group.userData.wheels=wheels; group.userData.wheelRadius=0.34;
@@ -201,7 +197,7 @@ function createTruckMesh(delayed){
 // Movement state
 let movingTrucks=[];
 const tmpDir=new THREE.Vector3();
-const MIN_GAP=2.2, JUNCTION_RADIUS=2.8;
+const MIN_GAP=2.4; // spacing on same segment
 
 function spawnMovingTruck(truck, rerouteMap){
   const delayed=(truck.status && String(truck.status).toLowerCase()==='delayed') || (truck.delay_hours||0)>0;
@@ -216,16 +212,18 @@ function spawnMovingTruck(truck, rerouteMap){
   mesh.position.copy(pts[0]);
   trucksGroup.add(mesh);
 
+  // --- NEW: staggered departure (prevents everyone blocking at the node) ---
+  const jitter = 300 + Math.random()*900; // 0.3–1.2s
   movingTrucks.push({
     id:truck.id, mesh, wheels:mesh.userData.wheels||[],
     path:pts, segIdx:0, segT:0, direction:1,
-    speed: delayed?2.0:3.2, wheelRadius:mesh.userData.wheelRadius||0.34,
-    lastPos:pts[0].clone(), pausedUntil:0
+    speed: delayed?2.4:3.6, wheelRadius:mesh.userData.wheelRadius||0.34,
+    lastPos:pts[0].clone(),
+    startAt: performance.now() + jitter // wait a bit before starting
   });
 }
 
 function segmentProgress(t){ const a=t.path[t.segIdx], b=t.path[t.segIdx+t.direction]; if(!a||!b) return 0; return t.segT * a.distanceTo(b); }
-function nearJunction(pos){ for(const k in WH_POS){ if(pos.distanceTo(WH_POS[k])<JUNCTION_RADIUS) return true; } return false; }
 
 // Scenario loader
 async function loadScenario(file, labelFromCaller){
@@ -261,13 +259,9 @@ function updateMovingTrucks(dt){
   const now=performance.now();
 
   for(const t of movingTrucks){
-    if(t.pausedUntil && now < t.pausedUntil) continue;
-    const pos=t.mesh.position;
-    if(nearJunction(pos)){ const other=movingTrucks.find(o=>o!==t && o.mesh.position.distanceTo(pos)<JUNCTION_RADIUS*0.9); if(other) t.pausedUntil=now+400; }
-  }
+    // NEW: staggered start — wait until startAt
+    if (now < t.startAt) continue;
 
-  for(const t of movingTrucks){
-    if(t.pausedUntil && now < t.pausedUntil) continue;
     const pts=t.path; if(!pts||pts.length<2) continue;
 
     let a=pts[t.segIdx], b=pts[t.segIdx + t.direction];
@@ -276,8 +270,10 @@ function updateMovingTrucks(dt){
     const segLen=Math.max(0.0001, a.distanceTo(b));
     let dT=(t.speed*dt)/segLen;
 
+    // Convoy spacing (same segment & direction)
     const candidates=movingTrucks.filter(o=>{
       if(o===t) return false;
+      if (now < o.startAt) return false; // ignore not-yet-started
       const oa=o.path[o.segIdx], ob=o.path[o.segIdx + o.direction];
       if(!oa||!ob) return false;
       return (oa.distanceTo(a)<0.01 && ob.distanceTo(b)<0.01 && o.direction===t.direction);
@@ -285,7 +281,7 @@ function updateMovingTrucks(dt){
     if(candidates.length){
       const myProg=segmentProgress(t); let minGap=Infinity;
       for(const o of candidates){ const oProg=segmentProgress(o); if(oProg>myProg) minGap=Math.min(minGap, oProg-myProg); }
-      if(minGap < MIN_GAP) dT *= Math.max(0.2, (minGap/MIN_GAP)*0.6);
+      if (isFinite(minGap) && minGap < MIN_GAP) dT *= Math.max(0.25, (minGap/MIN_GAP)*0.7);
     }
 
     t.segT += dT;
