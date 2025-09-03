@@ -1,17 +1,15 @@
 // ==========================================================
-// Agentic Twin — Roads + Real Truck + Robust JSON Loader
-// * Realistic highway look (tube road + dashed center line)
-// * Hand-curated NH48 / NH44 polylines between WH1, WH2, WH3
-// * Truck sprite (top-down image), yaw faces travel vector
-// * Warehouse texture restored
-// * Continuous ping-pong, convoy spacing, ~20% faster
-// * Commentary + Humanoid TTS
-// * Resilient loadScenario(): cache-bust + detailed errors
+// Agentic Twin — Roads + Real Truck + Robust loader (de-paired)
+// * Lights are children of the truck (move together)
+// * Breaks “convoy pairs” with start offset + speed variance
+// * Auto-upgrades placeholder trucks when truck_top.png finishes loading
+// * Realistic highways (tube + dashed center), NH48/NH44
+// * Humanoid TTS + Commentary, 20% faster than baseline
 // ==========================================================
 
-const TRUCK_IMAGE_PATH = "truck_top.png";          // top-down transparent PNG/SVG
-const MAP_IMAGE_PATH   = "india_map.png?v=10";     // bump query if GH Pages caches
-const WH_TEXTURE_PATH  = "warehouse_texture.png";  // your warehouse texture
+const TRUCK_IMAGE_PATH = "truck_top.png";
+const MAP_IMAGE_PATH   = "india_map.png?v=11";
+const WH_TEXTURE_PATH  = "warehouse_texture.png";
 
 // ---------- Scene & renderer ----------
 const scene = new THREE.Scene();
@@ -28,7 +26,7 @@ function setupCamera() {
   if (!orthoCam) {
     orthoCam = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, 0.1, 3000);
     orthoCam.position.set(0, 400, 0);
-    orthoCam.up.set(0, 0, -1); // map-like orientation
+    orthoCam.up.set(0, 0, -1); // map-like
     orthoCam.lookAt(0, 0, 0);
   } else {
     orthoCam.left = -halfW; orthoCam.right = halfW; orthoCam.top = halfH; orthoCam.bottom = -halfH;
@@ -44,7 +42,7 @@ const nowSec = () => ((performance.now() - t0) / 1000).toFixed(1);
 function clearLog(){ if (logEl) logEl.textContent = ""; t0 = performance.now(); ttsFlush(true); }
 function log(msg, speak=true){ const line=`[t=${nowSec()}s] ${msg}`; if (logEl) logEl.textContent += line+"\n"; console.log(line); if (speak) ttsEnq(msg); }
 
-// Simple humanoid TTS (browser SpeechSynthesis)
+// TTS
 const synth = window.speechSynthesis;
 let VOICE=null, q=[], playing=false;
 function pickVoice(){
@@ -61,7 +59,7 @@ function ttsFlush(cancel){ q=[]; playing=false; if(cancel&&synth) synth.cancel()
 
 // ---------- Map/projection ----------
 let mapPlane;
-const BOUNDS = { latMin: 8, latMax: 37, lonMin: 68, lonMax: 97 }; // India approx
+const BOUNDS = { latMin: 8, latMax: 37, lonMin: 68, lonMax: 97 };
 const projectLatLon = (lat, lon) => {
   const u=(lon-BOUNDS.lonMin)/(BOUNDS.lonMax-BOUNDS.lonMin);
   const v=1-(lat-BOUNDS.latMin)/(BOUNDS.latMax-BOUNDS.latMin);
@@ -124,18 +122,17 @@ const roadsGroup = new THREE.Group();
 const roadCenterGroup = new THREE.Group();
 scene.add(roadsGroup, roadCenterGroup);
 
-// hand-curated highway polyline samples
 const ROAD_POINTS = {
-  "WH1-WH2": [ // Delhi → Mumbai (NH48 via Jaipur–Udaipur–Ahmedabad–Surat)
+  "WH1-WH2": [
     [28.6139,77.2090],[26.9124,75.7873],[24.5854,73.7125],
     [23.0225,72.5714],[21.1702,72.8311],[19.0760,72.8777]
   ],
-  "WH2-WH3": [ // Mumbai → Bengaluru (NH48 via Pune–Kolhapur–Belagavi–Hubballi–Tumakuru)
+  "WH2-WH3": [
     [19.0760,72.8777],[18.5204,73.8567],[17.6805,74.0183],
     [16.7049,74.2433],[15.8497,74.4977],[15.3647,75.1240],
     [13.3409,77.1010],[12.9716,77.5946]
   ],
-  "WH3-WH1": [ // Bengaluru → Delhi (NH44 via Hyderabad–Nagpur–Jhansi–Agra)
+  "WH3-WH1": [
     [12.9716,77.5946],[17.3850,78.4867],[21.1458,79.0882],
     [25.4484,78.5685],[27.1767,78.0081],[28.6139,77.2090]
   ]
@@ -153,55 +150,64 @@ function buildRoads(){
   const pairs=[["WH1","WH2"],["WH2","WH3"],["WH3","WH1"]];
   for (const [a,b] of pairs){
     const pts = latlonToWorldPoints(getRoadLatLon(a,b));
-    // Asphalt tube
     const curve = new THREE.CatmullRomCurve3(pts);
     const tube  = new THREE.TubeGeometry(curve, Math.max(80, pts.length*20), 0.6, 12, false);
     const asphalt = new THREE.MeshBasicMaterial({ color: 0x2b2f36, opacity: 0.92, transparent: true });
     const mesh = new THREE.Mesh(tube, asphalt);
-    mesh.renderOrder = 1;
-    roadsGroup.add(mesh);
-    // Center dashed line (thin)
+    mesh.renderOrder = 1; roadsGroup.add(mesh);
+
     const lineGeom = new THREE.BufferGeometry().setFromPoints(pts);
     const dashed = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 2.0, gapSize: 1.5, opacity: 0.85, transparent: true });
     const line = new THREE.Line(lineGeom, dashed);
-    line.computeLineDistances();
-    line.renderOrder = 2;
-    roadCenterGroup.add(line);
+    line.computeLineDistances(); line.renderOrder = 2; roadCenterGroup.add(line);
   }
 }
 
-// ---------- Trucks (sprite plane that faces travel direction) ----------
+// ---------- Trucks (sprite plane + status light) ----------
 let TRUCK_TEXTURE = null;
-new THREE.TextureLoader().load(TRUCK_IMAGE_PATH, tex => {
+const truckTexLoader = new THREE.TextureLoader();
+truckTexLoader.load(TRUCK_IMAGE_PATH, tex => {
   tex.anisotropy = renderer.capabilities.getMaxAnisotropy?.() || 1;
   tex.minFilter = THREE.LinearMipMapLinearFilter;
   tex.magFilter = THREE.LinearFilter;
   TRUCK_TEXTURE = tex;
+  upgradeTruckMaterials(); // <- convert any placeholders that spawned early
 });
 
 function createTruck(delayed=false){
-  // plane lying flat on the map; we control yaw (rotation.y)
-  const w=6.5, h=3.25; // tweak to taste
-  let mat;
-  if (TRUCK_TEXTURE) {
-    mat = new THREE.MeshBasicMaterial({ map: TRUCK_TEXTURE, transparent: true });
-  } else {
-    // fallback color block if image not loaded yet
-    mat = new THREE.MeshBasicMaterial({ color: delayed?0xff3b30:0x00c853 });
-  }
+  const w=6.5, h=3.25;
+  const mat = TRUCK_TEXTURE
+    ? new THREE.MeshBasicMaterial({ map: TRUCK_TEXTURE, transparent: true })
+    : new THREE.MeshBasicMaterial({ color: delayed?0xff3b30:0x00c853 });
+
   const geo = new THREE.PlaneGeometry(w, h);
-  const m = new THREE.Mesh(geo, mat);
-  m.rotation.x = -Math.PI/2; // lay flat
-  m.position.y = 2.0;
+  const plane = new THREE.Mesh(geo, mat);
+  plane.rotation.x = -Math.PI/2;
+  plane.position.y = 2.0;
 
-  // tiny always-on-top dot for visibility
+  // Status "light" that always rides WITH the truck
   const dot = new THREE.Sprite(new THREE.SpriteMaterial({ color: delayed?0xff3b30:0x00c853, depthTest:false }));
-  dot.scale.set(1.2,1.2,1); dot.position.set(0,2.2,0); dot.renderOrder=2000; m.add(dot);
+  dot.scale.set(1.2,1.2,1); dot.position.set(0,2.2,0); dot.renderOrder=2000;
+  plane.add(dot);
 
-  return m;
+  return plane;
 }
 
-// ---------- Path / movement helpers ----------
+// If texture loads after some trucks spawned with solid colors, upgrade them.
+function upgradeTruckMaterials(){
+  if (!TRUCK_TEXTURE) return;
+  trucksGroup.traverse(obj=>{
+    if (obj.isMesh && obj.geometry && obj.geometry.type === "PlaneGeometry") {
+      if (!obj.material.map) {
+        obj.material.map = TRUCK_TEXTURE;
+        obj.material.color?.set(0xffffff);
+        obj.material.needsUpdate = true;
+      }
+    }
+  });
+}
+
+// ---------- Path / movement ----------
 function expandRouteIDsToLatLon(ids){
   const out=[];
   for (let i=0;i<ids.length-1;i++){
@@ -214,7 +220,6 @@ function expandRouteIDsToLatLon(ids){
 function worldPathFromIDs(ids){
   return latlonToWorldPoints(expandRouteIDsToLatLon(ids), 2.0);
 }
-const ADJ = { WH1:["WH2","WH3"], WH2:["WH1","WH3"], WH3:["WH1","WH2"] };
 function defaultPathIDs(o,d){
   if (o===d) return [o];
   const k1=keyFor(o,d), k2=keyFor(d,o);
@@ -227,7 +232,7 @@ function defaultPathIDs(o,d){
 const trucksGroup = new THREE.Group();
 scene.add(trucksGroup);
 let movingTrucks = [];
-const MIN_GAP = 2.6; // spacing along same segment
+const MIN_GAP = 2.6;
 
 function spawnTruckFrom(tr, reroutes){
   const isDelayed = (tr.status && String(tr.status).toLowerCase()==="delayed") || (tr.delay_hours||0)>0;
@@ -240,19 +245,27 @@ function spawnTruckFrom(tr, reroutes){
   if (pts.length<2) return;
 
   const mesh = createTruck(isDelayed);
-  mesh.position.copy(pts[0]);
+
+  // ---- Break pairing: random starting offset + speed variance ----
+  const startT = Math.random() * 0.18; // start a bit down the first segment
+  const startPos = new THREE.Vector3().lerpVectors(pts[0], pts[1], startT);
+  mesh.position.copy(startPos);
+
   trucksGroup.add(mesh);
 
-  // ~20% faster than our earlier baseline
-  const speed = isDelayed ? 2.88 : 4.32; // world units / second
-  const startAt = performance.now() + (300 + Math.random()*900); // staggered start
+  // ~20% faster baseline, plus ±8% variance to avoid lockstep
+  const base = isDelayed ? 2.88 : 4.32;
+  const speed = base * (0.92 + Math.random()*0.16);
+
+  const startAt = performance.now() + (250 + Math.random()*900); // stagger
 
   movingTrucks.push({
     id: tr.id, mesh,
-    path: pts, segIdx: 0, segT: 0, dir: 1,
-    speed, lastPos: pts[0].clone(), startAt
+    path: pts, segIdx: 0, segT: startT, dir: 1,
+    speed, lastPos: startPos.clone(), startAt
   });
 }
+
 function segProg(t){ const a=t.path[t.segIdx], b=t.path[t.segIdx + t.dir]; if(!a||!b) return 0; return t.segT * a.distanceTo(b); }
 
 function updateTrucks(dt){
@@ -264,7 +277,6 @@ function updateTrucks(dt){
     let a=pts[t.segIdx], b=pts[t.segIdx + t.dir];
     if (!b){ t.dir*=-1; b=pts[t.segIdx + t.dir]; if(!b) continue; }
 
-    // distance-normalized progress
     const segLen=Math.max(1e-4, a.distanceTo(b));
     let dT=(t.speed*dt)/segLen;
 
@@ -292,10 +304,9 @@ function updateTrucks(dt){
     const pos = new THREE.Vector3().lerpVectors(a,b,t.segT);
     t.mesh.position.copy(pos);
 
-    // Face direction of travel (yaw only)
+    // Face direction of travel (yaw)
     const dx = (b.x - a.x), dz = (b.z - a.z);
-    const yaw = Math.atan2(dx, dz); // Y is up
-    t.mesh.rotation.y = yaw;
+    t.mesh.rotation.y = Math.atan2(dx, dz);
 
     t.lastPos.copy(pos);
   }
@@ -310,7 +321,6 @@ async function loadScenario(file, labelFromCaller){
     while (trucksGroup.children.length) trucksGroup.remove(trucksGroup.children[0]);
     movingTrucks = [];
 
-    // cache-bust to avoid stale GH Pages
     const url = `${file}${file.includes('?') ? '&' : '?'}v=${Date.now()}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} fetching ${file}`);
@@ -320,7 +330,6 @@ async function loadScenario(file, labelFromCaller){
     try { data = JSON.parse(raw); }
     catch (e) { throw new Error(`JSON parse error: ${e.message}\nPreview: ${raw.slice(0,160)}…`); }
 
-    // reroutes
     const rerouteMap = new Map();
     if (Array.isArray(data.reroutes)) {
       for (const r of data.reroutes) {
@@ -328,7 +337,6 @@ async function loadScenario(file, labelFromCaller){
       }
     }
 
-    // trucks
     let total=0, delayedCount=0;
     for (const tr of (data.trucks||[])) {
       const delayed = (tr.status && String(tr.status).toLowerCase()==='delayed') || (tr.delay_hours||0)>0;
@@ -339,7 +347,6 @@ async function loadScenario(file, labelFromCaller){
     log(`Warehouses rendered: 3`);
     log(`Trucks rendered: ${total} (delayed=${delayedCount})`);
 
-    // static summary
     const isAfter=/after/i.test(file);
     const label = labelFromCaller || (isAfter ? "After correction" : "Normal operations");
     if (typeof data?.commentary?.static === 'string') {
@@ -348,26 +355,16 @@ async function loadScenario(file, labelFromCaller){
       log(`${label}: ${(data?.warehouses||[]).length||3} warehouses, ${(data?.trucks||[]).length||0} trucks.`);
     }
 
-    // robust timeline replay (accept array or object map)
+    // timeline (array or object map)
     let tl = data?.commentary?.timeline;
-    if (tl) {
-      if (Array.isArray(tl)) {
-        // ok
-      } else if (typeof tl === 'object') {
-        tl = Object.values(tl);
-      } else {
-        tl = null; // unsupported
-      }
-    }
+    if (tl) tl = Array.isArray(tl) ? tl : (typeof tl === 'object' ? Object.values(tl) : null);
     if (Array.isArray(tl)) {
       for (const step of tl) {
         try {
           const d = Number(step?.delay_ms) || 0;
           if (d > 0) await new Promise(r => setTimeout(r, d));
           if (typeof step?.msg === 'string') log(step.msg, true);
-        } catch (e) {
-          log(`Timeline step skipped: ${e.message}`, false);
-        }
+        } catch (e) { log(`Timeline step skipped: ${e.message}`, false); }
       }
     }
 
@@ -380,6 +377,9 @@ async function loadScenario(file, labelFromCaller){
       }
       log("Network stabilized after corrections.");
     }
+
+    // If truck texture loaded after spawning, upgrade placeholders
+    upgradeTruckMaterials();
 
   } catch (err) {
     console.error(err);
@@ -396,10 +396,13 @@ setupCamera();
   mapPlane=new THREE.Mesh(g, m); mapPlane.rotation.x = -Math.PI/2;
   scene.add(mapPlane);
 })();
-buildWarehouses(); buildRoads(); 
-// Labels after warehouses (needs WH_POS)
-function buildLabels(){ /* kept above — just call again here */ }
-buildLabels();
+buildWarehouses(); buildRoads();
+(function buildLabels(){ /* called after warehouses */ 
+  labelsGroup.clear();
+  labelsGroup.add(makeLabel(CITY.WH1.name, WH_POS.WH1, 7.0,  0.08));
+  labelsGroup.add(makeLabel(CITY.WH2.name, WH_POS.WH2, 7.0, -0.08));
+  labelsGroup.add(makeLabel(CITY.WH3.name, WH_POS.WH3, 8.6,  0.18));
+})();
 log("Bootstrapped scene. Loading india_map.png…");
 loadScenario("scenario_before.json","Normal operations");
 
@@ -413,7 +416,7 @@ mapImg.onload=()=>{
     if (mapPlane.material.map) mapPlane.material.map.dispose();
     mapPlane.material.dispose();
     mapPlane.material = new THREE.MeshBasicMaterial({ map: tex });
-    setupCamera(); buildWarehouses(); buildRoads(); buildLabels();
+    setupCamera(); buildWarehouses(); buildRoads(); // labels rebuilt by buildWarehouses()
     log(`Map loaded ${mapImg.width}×${mapImg.height}. Rebuilt network.`);
     loadScenario("scenario_before.json","Normal operations");
   }catch(e){ console.error(e); log("Map texture apply failed; keeping placeholder."); }
