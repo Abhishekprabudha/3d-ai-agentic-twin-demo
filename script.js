@@ -1,8 +1,11 @@
 /* ==============================================================
    Agentic Twin — MapLibre + Satellite/Hillshade + OSM Highways
-   Trucks: canvas overlay, oriented to motion, spacing, status light
-   Commentary + Humanoid TTS
-   Falls back to vector tiles if india_motorways.geojson is empty/missing
+   Upgrades:
+   - Vector-drawn warehouse icon (clean), or uses your PNG if present
+   - 2x truck speed (configurable)
+   - Roads: glow + heavier casing & centerline (much clearer)
+   - Increased headway (lag) on same segment
+   - Simple cross-traffic collision avoidance (gap at crossings)
    ============================================================== */
 
 //// --------------------------- Config ---------------------------
@@ -17,22 +20,27 @@ const MAP_INIT = {
 };
 
 // Use our custom style.json (Satellite + Hillshade).
-// Make sure you created style.json and pasted your MapTiler key.
 const STYLE_URL = "style.json";
 
-// (Optional) CARTO labels (symbols only). Leave empty to skip.
-const CARTO_STYLE_JSON_URL = ""; // e.g. "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+// Optional CARTO labels (symbols only). Leave empty to skip.
+const CARTO_STYLE_JSON_URL = "";
 
-// Assets expected in repo root
+// Assets in repo root (kept, but we now have a nicer vector fallback)
 const TRUCK_IMG = "truck_top.png";
 const WH_ICON   = "warehouse_texture.png";
 
-// Warehouse icon sizing
-const WAREHOUSE_BASE_PX = 54;    // size at ~zoom 5
-const WAREHOUSE_MIN_PX  = 36;
-const WAREHOUSE_MAX_PX  = 96;
+// --- Warehouse sizing & style ---
+const USE_VECTOR_WAREHOUSE = true;        // draw clean vector icon even if PNG exists
+const WAREHOUSE_BASE_PX = 66;             // bigger by default
+const WAREHOUSE_MIN_PX  = 42;
+const WAREHOUSE_MAX_PX  = 110;
 const warehouseSizeByZoom = (z) =>
   Math.max(WAREHOUSE_MIN_PX, Math.min(WAREHOUSE_MAX_PX, WAREHOUSE_BASE_PX * (0.9 + (z - 5) * 0.28)));
+
+// --- Truck motion tuning ---
+const SPEED_MULTIPLIER = 2.0;             // 2x faster overall
+const MIN_GAP_PX       = 40;              // required headway on same segment (was 18)
+const CROSS_GAP_PX     = 26;              // keep this gap when crossing other trucks
 
 //// --------------------- Commentary + Humanoid TTS ---------------------
 
@@ -138,7 +146,7 @@ function getMaptilerKeyFromStyle(map) {
   return null;
 }
 
-// Vector tile fallback (OpenMapTiles)
+// Vector tile fallback (OpenMapTiles) — now with a glow underlay
 function addVectorRoadLayers() {
   const key = getMaptilerKeyFromStyle(map) || "";
   if (!key) console.warn("MapTiler key not found in style.json. Vector tile roads may fail.");
@@ -150,40 +158,63 @@ function addVectorRoadLayers() {
     });
   }
 
-  if (!map.getLayer("vt-roads-casing")) {
+  const roadFilter = ["match", ["get", "class"], ["motorway","trunk","primary"], true, false];
+
+  if (!map.getLayer("vt-roads-glow")) {
     map.addLayer({
-      id: "vt-roads-casing",
+      id: "vt-roads-glow",
       type: "line",
       source: "omt",
       "source-layer": "transportation",
-      filter: ["match", ["get", "class"], ["motorway","trunk","primary"], true, false],
+      filter: roadFilter,
       paint: {
-        "line-color": "#2b2f36",
-        "line-opacity": 0.92,
+        "line-color": "#000000",
+        "line-opacity": 0.35,
         "line-width": [
           "interpolate", ["linear"], ["zoom"],
-          4, 0.8, 6, 1.4, 8, 2.6, 10, 4.0, 12, 6.0
+          4, 2.2, 6, 3.4, 8, 5.2, 10, 8.0, 12, 11.0
         ],
         "line-join": "round",
         "line-cap": "round"
       }
     });
   }
+
+  if (!map.getLayer("vt-roads-casing")) {
+    map.addLayer({
+      id: "vt-roads-casing",
+      type: "line",
+      source: "omt",
+      "source-layer": "transportation",
+      filter: roadFilter,
+      paint: {
+        "line-color": "#0f1216",
+        "line-opacity": 0.95,
+        "line-width": [
+          "interpolate", ["linear"], ["zoom"],
+          4, 1.4, 6, 2.4, 8, 4.2, 10, 6.4, 12, 8.8
+        ],
+        "line-join": "round",
+        "line-cap": "round"
+      }
+    });
+  }
+
   if (!map.getLayer("vt-roads-centerline")) {
     map.addLayer({
       id: "vt-roads-centerline",
       type: "line",
       source: "omt",
       "source-layer": "transportation",
-      filter: ["match", ["get", "class"], ["motorway","trunk","primary"], true, false],
+      filter: roadFilter,
       paint: {
         "line-color": "#ffffff",
-        "line-opacity": 0.85,
+        "line-opacity": 0.9,
         "line-width": [
           "interpolate", ["linear"], ["zoom"],
-          4, 0.2, 6, 0.4, 8, 0.6, 10, 0.9, 12, 1.1
+          4, 0.5, 6, 0.9, 8, 1.2, 10, 1.6, 12, 2.0
         ],
-        "line-dasharray": [2, 2.5]
+        "line-dasharray": [3, 2.25]
       }
     });
   }
@@ -202,29 +233,47 @@ async function addRoadLayers() {
 
     if (!map.getSource("india-roads")) map.addSource("india-roads", { type: "geojson", data: gj });
 
+    // Glow
+    map.addLayer({
+      id: "roads-glow",
+      type: "line",
+      source: "india-roads",
+      paint: {
+        "line-color": "#000000",
+        "line-opacity": 0.35,
+        "line-width": ["interpolate",["linear"],["zoom"],4,2.2,6,3.4,8,5.2,10,8.0,12,11.0],
+        "line-join": "round",
+        "line-cap": "round"
+      }
+    });
+
+    // Casing
     map.addLayer({
       id: "roads-casing",
       type: "line",
       source: "india-roads",
       paint: {
-        "line-color": "#2b2f36",
-        "line-opacity": 0.92,
-        "line-width": ["interpolate",["linear"],["zoom"],4,0.8,6,1.4,8,2.6,10,4.0,12,6.0],
+        "line-color": "#0f1216",
+        "line-opacity": 0.95,
+        "line-width": ["interpolate",["linear"],["zoom"],4,1.4,6,2.4,8,4.2,10,6.4,12,8.8],
         "line-join": "round",
         "line-cap": "round"
       }
     });
+
+    // Centerline
     map.addLayer({
       id: "roads-centerline",
       type: "line",
       source: "india-roads",
       paint: {
         "line-color": "#ffffff",
-        "line-opacity": 0.85,
-        "line-width": ["interpolate",["linear"],["zoom"],4,0.2,6,0.4,8,0.6,10,0.9,12,1.1],
-        "line-dasharray": [2, 2.5]
+        "line-opacity": 0.9,
+        "line-width": ["interpolate",["linear"],["zoom"],4,0.5,6,0.9,8,1.2,10,1.6,12,2.0],
+        "line-dasharray": [3, 2.25]
       }
     });
+
     log(`OSM roads (GeoJSON) loaded: ${gj.features.length} features.`, false);
   } catch (e) {
     console.warn("GeoJSON roads unavailable -> using vector tiles.", e);
@@ -241,7 +290,6 @@ const whImg = new Image();
 whImg.src = WH_ICON;
 
 const trucks = [];
-const MIN_GAP_PX = 18;
 
 function defaultPathIDs(o,d){
   if (o===d) return [o];
@@ -260,10 +308,10 @@ function spawnTruck(tr, reroutes){
   const latlon = expandRouteIDsToLatLon(pathIds);
   if (latlon.length < 2) return;
 
-  const startT = Math.random() * 0.22;                   // de-pairing
-  const base = delayed ? 2.88 : 4.32;                    // ~20% faster baseline
-  const speed = base * (0.92 + Math.random()*0.16);      // variance
-  const startDelay = 250 + Math.random()*900;
+  const startT = Math.random() * 0.45;                    // stronger de-pairing
+  const base = delayed ? 2.88 : 4.32;                     // baseline
+  const speed = base * (0.92 + Math.random()*0.16);       // variance
+  const startDelay = 800 + Math.random()*1400;            // stagger departures more
 
   trucks.push({
     id: tr.id,
@@ -275,6 +323,16 @@ function spawnTruck(tr, reroutes){
     delayed,
     startAt: performance.now() + startDelay
   });
+}
+
+// helper to get current screen pos of a truck
+function truckScreenPos(T){
+  const a = T.latlon[T.seg], b = T.latlon[T.seg + T.dir] || a;
+  const aP = map.project({lng:a[1], lat:a[0]});
+  const bP = map.project({lng:b[1], lat:b[0]});
+  const x = aP.x + (bP.x - aP.x) * T.t;
+  const y = aP.y + (bP.y - aP.y) * T.t;
+  return {x,y,aP,bP};
 }
 
 function drawTrucks(){
@@ -293,8 +351,8 @@ function drawTrucks(){
     const bP = map.project({lng:b[1], lat:b[0]});
     const segLenPx = Math.max(1, Math.hypot(bP.x - aP.x, bP.y - aP.y));
 
-    // px/sec scaled by zoom
-    const pxPerSec = T.speed * (0.9 + (map.getZoom()-4) * 0.12);
+    // px/sec scaled by zoom — doubled via SPEED_MULTIPLIER
+    let pxPerSec = SPEED_MULTIPLIER * T.speed * (0.9 + (map.getZoom()-4) * 0.12);
     const dtSec = 1/60;
     let dT = (pxPerSec * dtSec) / segLenPx;
 
@@ -303,6 +361,7 @@ function drawTrucks(){
     let minLead = Infinity;
     for (const O of trucks){
       if (O===T || now < O.startAt) continue;
+      // same segment and direction
       if (O.latlon[O.seg]===T.latlon[T.seg] && O.latlon[O.seg+O.dir]===T.latlon[T.seg+T.dir] && O.dir===T.dir) {
         const a2 = map.project({lng:O.latlon[O.seg][1], lat:O.latlon[O.seg][0]});
         const b2 = map.project({lng:O.latlon[O.seg+O.dir][1], lat:O.latlon[O.seg+O.dir][0]});
@@ -311,8 +370,25 @@ function drawTrucks(){
         if (oProg > myProg) minLead = Math.min(minLead, oProg - myProg);
       }
     }
-    if (isFinite(minLead) && minLead < MIN_GAP_PX) dT *= Math.max(0.25, (minLead/MIN_GAP_PX) * 0.7);
+    if (isFinite(minLead) && minLead < MIN_GAP_PX) {
+      dT *= Math.max(0.2, (minLead/MIN_GAP_PX) * 0.65);
+    }
 
+    // simple cross-traffic avoidance: if too close to any other truck in screen space, slow down
+    const {x:cx,y:cy} = truckScreenPos(T);
+    let nearest = Infinity;
+    for (const O of trucks){
+      if (O===T || now < O.startAt) continue;
+      const p = truckScreenPos(O);
+      const dx = p.x - cx, dy = p.y - cy;
+      const d = Math.hypot(dx, dy);
+      if (d < nearest) nearest = d;
+    }
+    if (isFinite(nearest) && nearest < CROSS_GAP_PX) {
+      dT *= Math.max(0.25, (nearest / CROSS_GAP_PX) * 0.6);
+    }
+
+    // integrate
     T.t += dT;
     if (T.t >= 1){
       T.seg += T.dir; T.t -= 1;
@@ -320,12 +396,10 @@ function drawTrucks(){
       else if (T.seg >= T.latlon.length-1){ T.seg = T.latlon.length-1; T.dir = -1; }
     }
 
-    // current position (px)
+    // position & angle
+    const theta = Math.atan2(bP.y - aP.y, bP.x - aP.x);
     const x = aP.x + (bP.x - aP.x) * T.t;
     const y = aP.y + (bP.y - aP.y) * T.t;
-
-    // rotation in screen space
-    const theta = Math.atan2(bP.y - aP.y, bP.x - aP.x);
 
     // draw truck
     const baseW=26, baseH=13;
@@ -342,13 +416,54 @@ function drawTrucks(){
       tctx.fillStyle = T.delayed ? "#ff3b30" : "#00c853";
       tctx.fillRect(-w/2, -h/2, w, h);
     }
-    // status light (attached to sprite)
+    // status light
     tctx.fillStyle = T.delayed ? "#ff3b30" : "#00c853";
     tctx.beginPath(); tctx.arc(w*0.32, -h*0.15, 3, 0, Math.PI*2); tctx.fill();
     tctx.restore();
   }
 
   map.triggerRepaint();
+}
+
+//// -------------------- Warehouse drawing (vector) --------------------
+
+function drawWarehouseIcon(ctx, x, y, S){
+  // simple top-view: pad, body with roof lines, shutter door
+  const r = S/2;
+  // pad
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.fillStyle = "#2b313a";
+  ctx.strokeStyle = "rgba(255,255,255,0.25)";
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.roundRect(-r, -r, S, S, 6); ctx.fill(); ctx.stroke();
+
+  // building body
+  ctx.fillStyle = "#cdd3db";
+  ctx.strokeStyle = "#808890";
+  ctx.lineWidth = 1.25;
+  const bw = S*0.64, bh = S*0.46;
+  ctx.beginPath(); ctx.roundRect(-bw/2, -bh/2, bw, bh, 4); ctx.fill(); ctx.stroke();
+
+  // roof stripes
+  ctx.strokeStyle = "#aab2bc";
+  for (let i=-2;i<=2;i++){
+    const yy = (bh/2)*0.6 * (i/2);
+    ctx.beginPath(); ctx.moveTo(-bw/2+4, yy); ctx.lineTo(bw/2-4, yy); ctx.stroke();
+  }
+
+  // shutter
+  ctx.fillStyle = "#87909a";
+  const shW = bw*0.38, shH = bh*0.34;
+  ctx.fillRect(-shW/2, bh*0.08, shW, shH);
+  ctx.fillStyle = "#57606a";
+  ctx.fillRect(-shW/2, bh*0.08 + shH*0.55, shW, shH*0.45);
+
+  // edge highlight
+  ctx.strokeStyle = "rgba(255,255,255,0.12)";
+  ctx.beginPath(); ctx.roundRect(-bw/2, -bh/2, bw, bh, 4); ctx.stroke();
+
+  ctx.restore();
 }
 
 function drawWarehouseLabels(){
@@ -366,10 +481,15 @@ function drawWarehouseLabels(){
     const c = CITY[id];
     const p = map.project({ lng: c.lon, lat: c.lat });
 
-    // BIG icon
     const S = warehouseSizeByZoom(z);
-    if (whImg.complete) tctx.drawImage(whImg, p.x - S/2, p.y - S/2, S, S);
-    else { tctx.fillStyle="#3c82f6"; tctx.beginPath(); tctx.arc(p.x,p.y,S/2,0,Math.PI*2); tctx.fill(); }
+    // Prefer vector icon for a clean, consistent look
+    if (USE_VECTOR_WAREHOUSE) {
+      drawWarehouseIcon(tctx, p.x, p.y, S);
+    } else if (whImg.complete) {
+      tctx.drawImage(whImg, p.x - S/2, p.y - S/2, S, S);
+    } else {
+      drawWarehouseIcon(tctx, p.x, p.y, S);
+    }
 
     // label pushed outward from centroid
     const label = c.name;
@@ -378,7 +498,7 @@ function drawWarehouseLabels(){
     const rot = (id==="WH3") ? 0.18 : (id==="WH2" ? -0.08 : 0.08);
     const ca = Math.cos(rot), sa = Math.sin(rot);
     const ex = dx*ca - dy*sa, ey = dx*sa + dy*ca;
-    const push = S/2 + 12;
+    const push = S/2 + 14;
     const len = Math.max(1, Math.hypot(ex, ey));
     const px = p.x + (ex/len) * push;
     const py = p.y + (ey/len) * push;
@@ -489,7 +609,7 @@ window.loadScenario = async function(file, labelFromCaller){
 
 map.on("load", async () => {
   resizeCanvas();
-  await addRoadLayers();     // GeoJSON → fallback to vector tiles
+  await addRoadLayers();     // GeoJSON → fallback to vector tiles (with glow)
   await addCartoLabels();    // optional
   log("Map & layers ready.", false);
   loadScenario("scenario_before.json","Normal operations");
