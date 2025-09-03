@@ -1,79 +1,74 @@
 /* ==============================================================
-   Agentic Twin — Satellite + Hillshade + OSM Highways
-   Upgrades in this build:
-   1) Sharp vector warehouse icon (wow look)
-   2) Trucks 4× baseline speed (double again from last 2×)
-   3) No written commentary (voice only) – panel hidden
-   4) Roads glow clearly + extra glow on the triangle routes
-   5) Crisp vector truck drawing (top view) with status LED
+   Agentic Twin — Satellite + Hillshade + OSM Highways (v-next)
+   What’s new:
+   1) Full India motorway network with strong glow (always visible)
+   2) Triangle routes densified + their own bright glow (reads like highway)
+   3) Voice says “Before Disruption / After Correction” (no filenames)
+   4) Pseudo-3D, sharp warehouse icons
+   5) Trucks 8× baseline, plus lane offsets + crossing gaps
    ============================================================== */
 
 //// --------------------------- Config ---------------------------
 
 const MAP_INIT = {
-  center: [78.9629, 21.5937], // India
-  zoom: 4.6,
+  center: [78.9629, 21.5937],  // India
+  zoom: 4.8,
   minZoom: 3,
   maxZoom: 12,
   pitch: 0,
   bearing: 0
 };
 
-// Use your custom style.json (Satellite + Hillshade with MapTiler key)
+// Your MapLibre style (Satellite + Hillshade + MapTiler key)
 const STYLE_URL = "style.json";
 
-// (Optional) CARTO labels (symbols only). Leave empty to skip.
+// Optional CARTO labels (symbols only). Leave empty to skip.
 const CARTO_STYLE_JSON_URL = "";
 
-// Assets (kept for fallback only)
+// Assets: only used as fallbacks
 const TRUCK_IMG = "truck_top.png";
 const WH_ICON   = "warehouse_texture.png";
 
-// Warehouses: draw vector by default (sharper than PNG)
+// Warehouses (vector by default)
 const USE_VECTOR_WAREHOUSE = true;
-const WAREHOUSE_BASE_PX = 72;  // bigger “wow”
-const WAREHOUSE_MIN_PX  = 44;
-const WAREHOUSE_MAX_PX  = 120;
+const WAREHOUSE_BASE_PX = 78;
+const WAREHOUSE_MIN_PX  = 46;
+const WAREHOUSE_MAX_PX  = 128;
 const warehouseSizeByZoom = (z) =>
   Math.max(WAREHOUSE_MIN_PX, Math.min(WAREHOUSE_MAX_PX, WAREHOUSE_BASE_PX * (0.9 + (z - 5) * 0.28)));
 
-// Trucks: speed & spacing
-const SPEED_MULTIPLIER = 4.0;   // 4× baseline (previously 2×)
-const MIN_GAP_PX       = 44;    // headway along same segment
-const CROSS_GAP_PX     = 30;    // gap when crossing other trucks
+// Trucks: 8× speed, lane offsets, gaps
+const SPEED_MULTIPLIER = 8.0;       // doubled again (was 4.0)
+const MIN_GAP_PX       = 50;        // headway along same segment
+const CROSS_GAP_PX     = 34;        // screen-space gap at crossings
+const LANES_PER_ROUTE  = 3;         // 3 “visual lanes” on the same line
+const LANE_WIDTH_PX    = 6.5;       // lane offset in pixels
 
-// Commentary: voice only; hide panel
+// Narration: voice only (no on-screen panel)
 const SHOW_TEXT_LOG = false;
-
-// Hide the commentary panel immediately
-(() => {
-  const panel = document.getElementById("commentary");
-  if (panel) panel.style.display = "none";
-})();
+(() => { const p=document.getElementById("commentary"); if (p) p.style.display="none"; })();
 
 //// --------------------- Commentary + Humanoid TTS ---------------------
 
-const logEl = document.getElementById("commentaryLog"); // will be hidden
+const logEl = document.getElementById("commentaryLog"); // hidden
 let t0 = performance.now();
 const nowSec = () => ((performance.now() - t0) / 1000).toFixed(1);
-function clearLog(){ if (SHOW_TEXT_LOG && logEl) logEl.textContent = ""; t0 = performance.now(); ttsFlush(true); }
+function clearLog(){ if (SHOW_TEXT_LOG && logEl) logEl.textContent=""; t0=performance.now(); ttsFlush(true); }
 function log(msg, speak=true){
-  const line=`[t=${nowSec()}s] ${msg}`;
-  if (SHOW_TEXT_LOG && logEl) logEl.textContent += line+"\n";
-  console.log(line);
+  if (SHOW_TEXT_LOG && logEl) logEl.textContent += `[t=${nowSec()}s] ${msg}\n`;
+  console.log(msg);
   if (speak) ttsEnq(msg);
 }
 
-// TTS
 const synth = window.speechSynthesis;
 let VOICE=null, q=[], playing=false;
 function pickVoice(){
   const prefs=[/en-IN/i,/English.+India/i,/Natural|Neural/i,/Microsoft/i,/Google/i,/en-GB/i,/en-US/i];
-  const vs = synth?.getVoices?.() || [];
-  for (const p of prefs){ const v = vs.find(v=>p.test(v.name)||p.test(v.lang)); if (v) return v; }
-  return vs[0] || null;
+  const vs=synth?.getVoices?.()||[];
+  for(const p of prefs){ const v=vs.find(v=>p.test(v.name)||p.test(v.lang)); if(v) return v; }
+  return vs[0]||null;
 }
-VOICE = pickVoice(); if (!VOICE && synth) synth.onvoiceschanged = () => { VOICE = pickVoice(); };
+VOICE = pickVoice(); if(!VOICE && synth) synth.onvoiceschanged=()=>{ VOICE=pickVoice(); };
 const speakNorm = s => String(s).replace(/\bETA\b/gi,"E T A").replace(/\bAI\b/gi,"A I").replace(/WH(\d+)/g,"Warehouse $1").replace(/->|→/g," to ");
 function ttsEnq(t){ if(!synth) return; speakNorm(t).split(/(?<=[.!?;])\s+|(?<=,)\s+/).forEach(p=>q.push(p)); if(!playing) playNext(); }
 function playNext(){ if(!synth) return; if(!q.length){ playing=false; return; } playing=true; const u=new SpeechSynthesisUtterance(q.shift()); if(VOICE) u.voice=VOICE; u.rate=1.0; u.pitch=1.02; u.onend=playNext; synth.speak(u); }
@@ -92,7 +87,7 @@ const map = new maplibregl.Map({
 });
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), "top-left");
 
-// Canvas overlay
+// Canvas overlay for trucks + labels
 const trucksCanvas = document.getElementById("trucksCanvas");
 const tctx = trucksCanvas.getContext("2d");
 function resizeCanvas(){
@@ -106,29 +101,39 @@ function resizeCanvas(){
 }
 window.addEventListener("resize", resizeCanvas);
 
-//// -------------------------- Data & Cities --------------------------
+//// -------------------------- Cities & Routes --------------------------
 
+// City anchors
 const CITY = {
   WH1:{ name:"WH1 — Delhi",     lat:28.6139, lon:77.2090 },
   WH2:{ name:"WH2 — Mumbai",    lat:19.0760, lon:72.8777 },
   WH3:{ name:"WH3 — Bangalore", lat:12.9716, lon:77.5946 }
 };
 
-// Triangle polylines (lat, lon) roughly along NH44 / NH48
+// Densified highway-like polylines (approx. NH network curvature)
+// (lat, lon). These sit nicely on top of the glowing motorway layer.
 const ROAD_POINTS = {
   "WH1-WH2": [
-    [28.6139,77.2090],[26.9124,75.7873],[24.5854,73.7125],
-    [23.0225,72.5714],[21.1702,72.8311],[19.0760,72.8777]
+    [28.6139,77.2090], [28.0210,76.3480], [27.0885,75.8000], [26.9124,75.7873],
+    [26.2389,75.7485], [25.5893,75.4843], [24.8855,74.6249], [24.5854,73.7125],
+    [24.1988,73.2406], [23.5204,72.7783], [23.0225,72.5714], [22.5220,72.6300],
+    [21.7065,72.9830], [21.1702,72.8311], [20.6026,72.9220], [19.8704,72.8847],
+    [19.4500,72.8400], [19.0760,72.8777]
   ],
   "WH2-WH3": [
-    [19.0760,72.8777],[18.5204,73.8567],[16.7049,74.2433],
-    [15.8497,74.4977],[13.3409,77.1010],[12.9716,77.5946]
+    [19.0760,72.8777], [18.8524,73.0650], [18.5204,73.8567], [18.1220,74.3560],
+    [17.6820,74.4300], [17.1040,74.5200], [16.7049,74.2433], [15.8497,74.4977],
+    [15.2000,75.1000], [14.5000,76.2000], [13.9000,76.9000], [13.3409,77.1010],
+    [13.1600,77.2800], [12.9716,77.5946]
   ],
   "WH3-WH1": [
-    [12.9716,77.5946],[17.3850,78.4867],[21.1458,79.0882],
-    [27.1767,78.0081],[28.6139,77.2090]
+    [12.9716,77.5946], [13.8000,78.1000], [14.5000,78.6000], [15.7000,78.8000],
+    [16.9000,78.7000], [17.3850,78.4867], [18.7000,78.7000], [20.3000,79.2000],
+    [21.1458,79.0882], [23.0000,78.7000], [24.5000,78.3000], [26.0000,78.2000],
+    [27.1767,78.0081], [28.1000,77.7000], [28.6139,77.2090]
   ]
 };
+
 const keyFor=(a,b)=>`${a}-${b}`;
 function getRoadLatLon(a,b){
   const k1=keyFor(a,b), k2=keyFor(b,a);
@@ -157,7 +162,7 @@ function triangleRoutesGeoJSON(){
   };
 }
 
-//// ------------------------ Roads (dual source) ------------------------
+//// ------------------------- Road Layers -------------------------
 
 function getMaptilerKeyFromStyle(map) {
   try {
@@ -170,167 +175,135 @@ function getMaptilerKeyFromStyle(map) {
   return null;
 }
 
-// Vector tile fallback with strong glow
+// Vector-tile OSM network with a strong glow (motorway/trunk/primary)
 function addVectorRoadLayers() {
   const key = getMaptilerKeyFromStyle(map) || "";
   if (!key) console.warn("MapTiler key not found in style.json.");
 
   if (!map.getSource("omt")) {
-    map.addSource("omt", { type: "vector", url: `https://api.maptiler.com/tiles/v3/tiles.json?key=${key}` });
+    map.addSource("omt", { type:"vector", url:`https://api.maptiler.com/tiles/v3/tiles.json?key=${key}` });
   }
 
-  const roadFilter = ["match", ["get", "class"], ["motorway","trunk","primary"], true, false];
+  const roadFilter = ["match", ["get","class"], ["motorway","trunk","primary"], true, false];
 
   if (!map.getLayer("vt-roads-glow")) {
     map.addLayer({
-      id: "vt-roads-glow",
-      type: "line",
-      source: "omt",
-      "source-layer": "transportation",
+      id:"vt-roads-glow",
+      type:"line",
+      source:"omt",
+      "source-layer":"transportation",
       filter: roadFilter,
-      paint: {
-        "line-color": "#4fd1ff",
-        "line-opacity": 0.55,
-        "line-blur": 1.0,
-        "line-width": ["interpolate",["linear"],["zoom"],4,3.2,6,4.6,8,7.4,10,11.0,12,14.0],
-        "line-join": "round",
-        "line-cap": "round"
+      paint:{
+        "line-color":"#59e0ff",
+        "line-opacity":0.62,
+        "line-blur": 1.2,
+        "line-width":["interpolate",["linear"],["zoom"],4,3.6,6,5.2,8,8.2,10,12.6,12,16.0],
+        "line-join":"round","line-cap":"round"
       }
     });
   }
 
   if (!map.getLayer("vt-roads-casing")) {
     map.addLayer({
-      id: "vt-roads-casing",
-      type: "line",
-      source: "omt",
-      "source-layer": "transportation",
+      id:"vt-roads-casing",
+      type:"line",
+      source:"omt",
+      "source-layer":"transportation",
       filter: roadFilter,
-      paint: {
-        "line-color": "#0e1116",
-        "line-opacity": 0.95,
-        "line-width": ["interpolate",["linear"],["zoom"],4,1.6,6,2.6,8,4.4,10,6.8,12,9.2],
-        "line-join": "round",
-        "line-cap": "round"
+      paint:{
+        "line-color":"#0d1116",
+        "line-opacity":0.98,
+        "line-width":["interpolate",["linear"],["zoom"],4,1.8,6,2.8,8,4.8,10,7.2,12,9.6],
+        "line-join":"round","line-cap":"round"
       }
     });
   }
 
-  if (!map.getLayer("vt-roads-centerline")) {
+  if (!map.getLayer("vt-roads-core")) {
     map.addLayer({
-      id: "vt-roads-centerline",
-      type: "line",
-      source: "omt",
-      "source-layer": "transportation",
+      id:"vt-roads-core",
+      type:"line",
+      source:"omt",
+      "source-layer":"transportation",
       filter: roadFilter,
-      paint: {
-        "line-color": "#ffffff",
-        "line-opacity": 0.95,
-        "line-width": ["interpolate",["linear"],["zoom"],4,0.7,6,1.1,8,1.5,10,2.0,12,2.4],
-        "line-dasharray": [3, 2.1]
+      paint:{
+        "line-color":"#ffffff",
+        "line-opacity":0.98,
+        "line-width":["interpolate",["linear"],["zoom"],4,0.9,6,1.3,8,1.8,10,2.4,12,2.8]
       }
     });
   }
 
-  // Extra glow overlay exactly on our triangle routes
   addTriangleGlowLayers();
-  log("OSM roads (vector tiles) + triangle glow loaded.", false);
 }
 
-// Try local GeoJSON first; if empty/missing, fall back to vector tiles
-async function addRoadLayers() {
-  if (map.getLayer("roads-casing") || map.getLayer("vt-roads-casing")) return;
+// Try local GeoJSON first; else use vector tiles
+async function addRoadLayers(){
   try {
-    const resp = await fetch("india_motorways.geojson", { cache: "no-store" });
-    if (!resp.ok) throw new Error(`GeoJSON ${resp.status}`);
-    const gj = await resp.json();
-    const hasFeatures = gj && gj.features && gj.features.length > 0;
-    if (!hasFeatures) throw new Error("GeoJSON empty");
+    const resp = await fetch("india_motorways.geojson", { cache:"no-store" });
+    const ok = resp.ok ? await resp.json() : null;
+    if (ok && ok.features && ok.features.length) {
+      if (!map.getSource("india-roads"))
+        map.addSource("india-roads", { type:"geojson", data:ok });
 
-    if (!map.getSource("india-roads")) map.addSource("india-roads", { type: "geojson", data: gj });
-
-    // Glow base
-    map.addLayer({
-      id: "roads-glow",
-      type: "line",
-      source: "india-roads",
-      paint: {
-        "line-color": "#4fd1ff",
-        "line-opacity": 0.55,
-        "line-blur": 1.0,
-        "line-width": ["interpolate",["linear"],["zoom"],4,3.2,6,4.6,8,7.4,10,11.0,12,14.0],
-        "line-join": "round",
-        "line-cap": "round"
-      }
-    });
-
-    // Asphalt casing
-    map.addLayer({
-      id: "roads-casing",
-      type: "line",
-      source: "india-roads",
-      paint: {
-        "line-color": "#0e1116",
-        "line-opacity": 0.95,
-        "line-width": ["interpolate",["linear"],["zoom"],4,1.6,6,2.6,8,4.4,10,6.8,12,9.2],
-        "line-join": "round",
-        "line-cap": "round"
-      }
-    });
-
-    // Centerline
-    map.addLayer({
-      id: "roads-centerline",
-      type: "line",
-      source: "india-roads",
-      paint: {
-        "line-color": "#ffffff",
-        "line-opacity": 0.95,
-        "line-width": ["interpolate",["linear"],["zoom"],4,0.7,6,1.1,8,1.5,10,2.0,12,2.4],
-        "line-dasharray": [3, 2.1]
-      }
-    });
-
-    // Extra glow overlay on triangle
-    addTriangleGlowLayers();
-
-    log(`OSM roads (GeoJSON) + triangle glow loaded: ${gj.features.length} features.`, false);
+      map.addLayer({
+        id:"roads-glow", type:"line", source:"india-roads",
+        paint:{
+          "line-color":"#59e0ff",
+          "line-opacity":0.62,
+          "line-blur":1.2,
+          "line-width":["interpolate",["linear"],["zoom"],4,3.6,6,5.2,8,8.2,10,12.6,12,16.0],
+          "line-join":"round","line-cap":"round"
+        }
+      });
+      map.addLayer({
+        id:"roads-casing", type:"line", source:"india-roads",
+        paint:{
+          "line-color":"#0d1116","line-opacity":0.98,
+          "line-width":["interpolate",["linear"],["zoom"],4,1.8,6,2.8,8,4.8,10,7.2,12,9.6],
+          "line-join":"round","line-cap":"round"
+        }
+      });
+      map.addLayer({
+        id:"roads-core", type:"line", source:"india-roads",
+        paint:{
+          "line-color":"#ffffff","line-opacity":0.98,
+          "line-width":["interpolate",["linear"],["zoom"],4,0.9,6,1.3,8,1.8,10,2.4,12,2.8]
+        }
+      });
+      addTriangleGlowLayers();
+    } else {
+      addVectorRoadLayers();
+    }
   } catch (e) {
-    console.warn("GeoJSON roads unavailable -> using vector tiles.", e);
+    console.warn("GeoJSON roads unavailable, using vector tiles.", e);
     addVectorRoadLayers();
   }
 }
 
-// Add “full glow” exactly on our WH1↔WH2↔WH3 triangle routes
+// Extra-bright glow exactly on our WH1↔WH2↔WH3 triangle
 function addTriangleGlowLayers(){
-  const srcId = "triangle-routes";
-  if (!map.getSource(srcId)) {
-    map.addSource(srcId, { type:"geojson", data: triangleRoutesGeoJSON() });
-  }
+  const srcId="triangle-routes";
+  if (!map.getSource(srcId)) map.addSource(srcId,{ type:"geojson", data:triangleRoutesGeoJSON() });
+
   if (!map.getLayer("triangle-glow")) {
     map.addLayer({
-      id: "triangle-glow",
-      type: "line",
-      source: srcId,
-      paint: {
-        "line-color": "#7de3ff",
-        "line-opacity": 0.66,
-        "line-blur": 1.2,
-        "line-width": ["interpolate",["linear"],["zoom"],4,4.2,6,6.0,8,9.0,10,13.5,12,18.0],
-        "line-join": "round",
-        "line-cap": "round"
+      id:"triangle-glow", type:"line", source:srcId,
+      paint:{
+        "line-color":"#97f0ff",
+        "line-opacity":0.78,
+        "line-blur":1.4,
+        "line-width":["interpolate",["linear"],["zoom"],4,4.8,6,6.6,8,9.8,10,14.5,12,19.0],
+        "line-join":"round","line-cap":"round"
       }
     });
   }
   if (!map.getLayer("triangle-core")) {
     map.addLayer({
-      id: "triangle-core",
-      type: "line",
-      source: srcId,
-      paint: {
-        "line-color": "#ffffff",
-        "line-opacity": 0.95,
-        "line-width": ["interpolate",["linear"],["zoom"],4,1.0,6,1.6,8,2.2,10,3.0,12,3.6]
+      id:"triangle-core", type:"line", source:srcId,
+      paint:{
+        "line-color":"#ffffff","line-opacity":0.98,
+        "line-width":["interpolate",["linear"],["zoom"],4,1.1,6,1.7,8,2.3,10,3.2,12,3.8]
       }
     });
   }
@@ -343,7 +316,6 @@ const whImg    = new Image(); whImg.src    = WH_ICON;
 
 const trucks = [];
 
-// Default path if no reroute provided
 function defaultPathIDs(o,d){
   if (o===d) return [o];
   const k1=keyFor(o,d), k2=keyFor(d,o);
@@ -361,20 +333,26 @@ function spawnTruck(tr, reroutes){
   const latlon = expandRouteIDsToLatLon(pathIds);
   if (latlon.length < 2) return;
 
-  const startT = Math.random() * 0.5;                 // strong de-pairing
-  const base = delayed ? 2.88 : 4.32;
-  const speed = base * (0.92 + Math.random()*0.16);
-  const startDelay = 900 + Math.random()*1500;         // stagger departures
+  // randomize start progress and departure to de-pair trucks
+  const startT = Math.random() * 0.55;
+  const base = delayed ? 2.88 : 4.32;                 // internal base
+  const speed = base * (0.92 + Math.random()*0.16);   // per-truck variance
+  const startDelay = 900 + Math.random()*1600;
+
+  // lane index (stable per truck id)
+  const laneIndex = ((hashStr(tr.id) % LANES_PER_ROUTE) + LANES_PER_ROUTE) % LANES_PER_ROUTE;
 
   trucks.push({
     id: tr.id, latlon,
     seg: 0, t: startT, dir: 1,
     speed, delayed,
+    laneIndex,
     startAt: performance.now() + startDelay
   });
 }
 
-// Helpers
+function hashStr(s){ let h=0; for (let i=0;i<s.length;i++){ h=((h<<5)-h)+s.charCodeAt(i); h|=0; } return Math.abs(h); }
+
 function truckScreenPos(T){
   const a = T.latlon[T.seg], b = T.latlon[T.seg + T.dir] || a;
   const aP = map.project({lng:a[1], lat:a[0]});
@@ -384,17 +362,16 @@ function truckScreenPos(T){
   return {x,y,aP,bP};
 }
 
-// Vector truck sprite (crisp top view)
 function drawVectorTruck(ctx, w, h, delayed){
   const r = Math.min(w,h)/2;
-  // body shadow
+  // shadow
   ctx.fillStyle = "rgba(0,0,0,0.28)";
   ctx.beginPath(); ctx.ellipse(0, r*0.38, r*0.95, r*0.42, 0, 0, Math.PI*2); ctx.fill();
 
   // trailer
   const trW = w*0.78, trH = h*0.72;
   const trailGrad = ctx.createLinearGradient(-trW/2,0,trW/2,0);
-  trailGrad.addColorStop(0,"#e9edf2"); trailGrad.addColorStop(1,"#cdd6de");
+  trailGrad.addColorStop(0,"#eef2f6"); trailGrad.addColorStop(1,"#cfd7df");
   ctx.fillStyle = trailGrad; ctx.strokeStyle = "#6f7a86"; ctx.lineWidth = 1.25;
   ctx.beginPath(); ctx.roundRect(-trW/2, -trH/2, trW, trH, 3); ctx.fill(); ctx.stroke();
 
@@ -434,12 +411,12 @@ function drawTrucks(){
     const bP = map.project({lng:b[1], lat:b[0]});
     const segLenPx = Math.max(1, Math.hypot(bP.x - aP.x, bP.y - aP.y));
 
-    // speed (px/sec) with 4× multiplier
+    // speed with 8× multiplier
     let pxPerSec = SPEED_MULTIPLIER * T.speed * (0.9 + (map.getZoom()-4) * 0.12);
     const dtSec = 1/60;
     let dT = (pxPerSec * dtSec) / segLenPx;
 
-    // spacing on same segment/direction
+    // spacing on same segment
     const myProg = T.t * segLenPx;
     let minLead = Infinity;
     for (const O of trucks){
@@ -454,7 +431,7 @@ function drawTrucks(){
     }
     if (isFinite(minLead) && minLead < MIN_GAP_PX) dT *= Math.max(0.2, (minLead/MIN_GAP_PX) * 0.6);
 
-    // cross-traffic avoidance (screen-space)
+    // crossing gap (screen-space)
     const {x:cx,y:cy} = truckScreenPos(T);
     let nearest = Infinity;
     for (const O of trucks){
@@ -478,25 +455,26 @@ function drawTrucks(){
     const x = aP.x + (bP.x - aP.x) * T.t;
     const y = aP.y + (bP.y - aP.y) * T.t;
 
-    // sprite size scales with zoom
+    // lane offset (perpendicular)
+    const nx = -(bP.y - aP.y), ny =  (bP.x - aP.x);
+    const nLen = Math.max(1, Math.hypot(nx,ny));
+    const laneZeroCentered = T.laneIndex - (LANES_PER_ROUTE-1)/2;
+    const off = (laneZeroCentered) * LANE_WIDTH_PX;
+    const xOff = x + (nx/nLen) * off;
+    const yOff = y + (ny/nLen) * off;
+
+    // sprite size
     const baseW=28, baseH=14;
     const z = map.getZoom();
     const scale = 1.0 + (z-4)*0.12;
     const w = baseW*scale, h = baseH*scale;
 
     tctx.save();
-    tctx.translate(x, y);
+    tctx.translate(xOff, yOff);
     tctx.rotate(theta);
 
-    // draw crisp vector truck; fallback to PNG if available
-    if (true) { // always use vector for sharpness
-      drawVectorTruck(tctx, w, h, T.delayed);
-    } else if (truckImg.complete) {
-      tctx.drawImage(truckImg, -w/2, -h/2, w, h);
-    } else {
-      tctx.fillStyle = T.delayed ? "#ff3b30" : "#00c853";
-      tctx.fillRect(-w/2, -h/2, w, h);
-    }
+    // vector truck (crisp) – always prefer this
+    drawVectorTruck(tctx, w, h, T.delayed);
 
     tctx.restore();
   }
@@ -504,97 +482,93 @@ function drawTrucks(){
   map.triggerRepaint();
 }
 
-//// -------------------- Warehouse drawing (sharp vector) --------------
+//// -------------------- Pseudo-3D Warehouse Icon ---------------------
 
 function drawWarehouseIcon(ctx, x, y, S){
-  // pixel-snap for razor-sharp strokes
+  // pixel-snap for crisp edges
   const snap = (v) => Math.round(v) + 0.5;
 
   ctx.save();
   ctx.translate(Math.round(x)+0.5, Math.round(y)+0.5);
 
-  const r = S / 2;
+  const r = S/2;
 
-  // soft ground shadow for depth
-  ctx.fillStyle = "rgba(0,0,0,0.22)";
-  ctx.beginPath();
-  ctx.ellipse(0, r*0.62, r*0.88, r*0.36, 0, 0, Math.PI*2);
-  ctx.fill();
+  // soft ground shadow
+  ctx.fillStyle = "rgba(0,0,0,0.24)";
+  ctx.beginPath(); ctx.ellipse(0, r*0.58, r*0.92, r*0.40, 0, 0, Math.PI*2); ctx.fill();
 
-  // concrete pad
+  // base pad
   const padGrad = ctx.createLinearGradient(0, -r, 0, r);
-  padGrad.addColorStop(0, "#1a1f27");
-  padGrad.addColorStop(1, "#0d1016");
+  padGrad.addColorStop(0, "#141a21");
+  padGrad.addColorStop(1, "#0b0f14");
   ctx.fillStyle = padGrad;
-  ctx.strokeStyle = "rgba(255,255,255,0.14)";
+  ctx.strokeStyle = "rgba(255,255,255,0.15)";
   ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.roundRect(snap(-r), snap(-r), S, S, 10); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.roundRect(snap(-r), snap(-r), S, S, 12); ctx.fill(); ctx.stroke();
 
-  // building body
-  const bw = S*0.70, bh = S*0.50;
+  // pseudo-3D block (front face + top face)
+  const bw = S*0.72, bh = S*0.52, depth = S*0.18;
+
+  // front face
   const bodyGrad = ctx.createLinearGradient(0, -bh/2, 0, bh/2);
-  bodyGrad.addColorStop(0, "#dbe2ea");
-  bodyGrad.addColorStop(1, "#b7c0ca");
-  ctx.fillStyle = bodyGrad;
-  ctx.strokeStyle = "#77808b";
-  ctx.lineWidth = 1.25;
+  bodyGrad.addColorStop(0, "#e6ecf3");
+  bodyGrad.addColorStop(1, "#c4cdd7");
+  ctx.fillStyle = bodyGrad; ctx.strokeStyle = "#7a8591"; ctx.lineWidth=1.25;
   ctx.beginPath(); ctx.roundRect(snap(-bw/2), snap(-bh/2), bw, bh, 6); ctx.fill(); ctx.stroke();
 
+  // top face (slight perspective)
+  ctx.fillStyle = "#f5f8fb";
+  ctx.strokeStyle = "#9099a5";
+  ctx.beginPath();
+  ctx.moveTo(-bw/2, -bh/2);
+  ctx.lineTo(bw/2, -bh/2);
+  ctx.lineTo(bw/2 - depth, -bh/2 - depth);
+  ctx.lineTo(-bw/2 + depth, -bh/2 - depth);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+
   // roof ribs
-  ctx.strokeStyle = "#aab3bd";
-  ctx.lineWidth = 1;
-  const ribs = 6;
-  for (let i=0;i<=ribs;i++){
-    const t = i/ribs;
-    const yy = -bh/2 + 6 + t*(bh-12);
-    ctx.beginPath();
-    ctx.moveTo(snap(-bw/2 + 6), snap(yy));
-    ctx.lineTo(snap(bw/2 - 6), snap(yy));
-    ctx.stroke();
+  ctx.strokeStyle = "#b6c0cb"; ctx.lineWidth=1;
+  for (let i=1;i<=5;i++){
+    const t = i/6;
+    const x1 = -bw/2 + depth * (1-t);
+    const x2 =  bw/2 - depth * t;
+    const yy = -bh/2 - depth * t;
+    ctx.beginPath(); ctx.moveTo(snap(x1), snap(yy)); ctx.lineTo(snap(x2), snap(yy)); ctx.stroke();
   }
 
-  // skylights
-  const skylW = bw*0.14, skylH = bh*0.16;
-  const skylGrad = ctx.createLinearGradient(-skylW/2,0,skylW/2,0);
-  skylGrad.addColorStop(0, "#eaf2ff");
-  skylGrad.addColorStop(1, "#c9d7ef");
-  ctx.fillStyle = skylGrad;
-  ctx.strokeStyle = "rgba(0,0,0,0.18)";
-  ctx.lineWidth = 1;
-  const skylY = -bh*0.14;
-  const gap  = bw*0.22;
+  // skylights on top
+  const skW = bw*0.16, skH = depth*0.66;
+  const skGrad = ctx.createLinearGradient(-skW/2,0,skW/2,0);
+  skGrad.addColorStop(0,"#eaf2ff"); skGrad.addColorStop(1,"#c9d7ef");
+  ctx.fillStyle = skGrad; ctx.strokeStyle="rgba(0,0,0,0.18)";
+  const skY = -bh/2 - depth + skH/2; const gap= bw*0.24;
   for (let i=-1;i<=1;i+=2){
+    const cx = i*gap; const cy = skY;
     ctx.beginPath();
-    ctx.roundRect(snap(i*gap - skylW/2), snap(skylY - skylH/2), skylW, skylH, 3);
+    ctx.roundRect(snap(cx - skW/2), snap(cy - skH/2), skW, skH, 3);
     ctx.fill(); ctx.stroke();
   }
 
-  // loading bay / shutter
-  const shW = bw*0.44, shH = bh*0.36, shY = bh*0.06;
+  // loading dock (front)
+  const shW = bw*0.46, shH = bh*0.36, shY = bh*0.06;
   const frameGrad = ctx.createLinearGradient(0, shY, 0, shY+shH);
   frameGrad.addColorStop(0, "#8f98a3"); frameGrad.addColorStop(1, "#6f7780");
   ctx.fillStyle = frameGrad;
   ctx.beginPath(); ctx.roundRect(snap(-shW/2), snap(shY), shW, shH, 4); ctx.fill();
 
   // shutter slats
-  ctx.strokeStyle = "#525a63";
-  ctx.lineWidth = 1;
-  const slats = 6;
-  for (let i=1;i<slats;i++){
-    const yy = shY + (i/slats)*shH;
-    ctx.beginPath();
-    ctx.moveTo(snap(-shW/2 + 6), snap(yy));
-    ctx.lineTo(snap(shW/2 - 6), snap(yy));
-    ctx.stroke();
+  ctx.strokeStyle="#525a63"; ctx.lineWidth=1;
+  for(let i=1;i<6;i++){
+    const yy = shY + (i/6)*shH;
+    ctx.beginPath(); ctx.moveTo(snap(-shW/2 + 6), snap(yy)); ctx.lineTo(snap(shW/2 - 6), snap(yy)); ctx.stroke();
   }
 
-  // inner shutter shade
-  ctx.fillStyle = "#3f464f";
+  // dark lower shutter
+  ctx.fillStyle="#3f464f";
   ctx.fillRect(snap(-shW/2 + 4), snap(shY + shH*0.55), shW-8, shH*0.45);
 
-  // subtle edge highlight
-  ctx.strokeStyle = "rgba(255,255,255,0.12)";
-  ctx.lineWidth = 1;
+  // subtle rim light
+  ctx.strokeStyle="rgba(255,255,255,0.12)";
   ctx.beginPath(); ctx.roundRect(snap(-bw/2), snap(-bh/2), bw, bh, 6); ctx.stroke();
 
   ctx.restore();
@@ -607,37 +581,34 @@ function drawWarehouseLabels(){
   tctx.textBaseline = "middle";
 
   const centroid = map.project({
-    lng: (CITY.WH1.lon + CITY.WH2.lon + CITY.WH3.lon) / 3,
-    lat: (CITY.WH1.lat + CITY.WH2.lat + CITY.WH3.lat) / 3
+    lng:(CITY.WH1.lon + CITY.WH2.lon + CITY.WH3.lon)/3,
+    lat:(CITY.WH1.lat + CITY.WH2.lat + CITY.WH3.lat)/3
   });
 
   for (const id of Object.keys(CITY)){
     const c = CITY[id];
-    const p = map.project({ lng: c.lon, lat: c.lat });
+    const p = map.project({ lng:c.lon, lat:c.lat });
 
     const S = warehouseSizeByZoom(z);
     if (USE_VECTOR_WAREHOUSE) drawWarehouseIcon(tctx, p.x, p.y, S);
     else if (whImg.complete)  tctx.drawImage(whImg, p.x - S/2, p.y - S/2, S, S);
     else                      drawWarehouseIcon(tctx, p.x, p.y, S);
 
-    // label pushed outward
+    // label pushed away from centre
     const label = c.name;
-    const pad = 6, h = 18, w = tctx.measureText(label).width + pad*2;
-    const dx = p.x - centroid.x, dy = p.y - centroid.y;
-    const rot = (id==="WH3") ? 0.18 : (id==="WH2" ? -0.08 : 0.08);
-    const ca = Math.cos(rot), sa = Math.sin(rot);
-    const ex = dx*ca - dy*sa, ey = dx*sa + dy*ca;
-    const push = S/2 + 14;
-    const len = Math.max(1, Math.hypot(ex, ey));
-    const px = p.x + (ex/len) * push;
-    const py = p.y + (ey/len) * push;
+    const pad=6, h=18, w=tctx.measureText(label).width + pad*2;
+    const dx=p.x-centroid.x, dy=p.y-centroid.y;
+    const rot=(id==="WH3")?0.18:(id==="WH2"?-0.08:0.08);
+    const ca=Math.cos(rot), sa=Math.sin(rot);
+    const ex=dx*ca - dy*sa, ey=dx*sa + dy*ca;
+    const push=S/2 + 14; const len=Math.max(1,Math.hypot(ex,ey));
+    const px=p.x + (ex/len)*push, py=p.y + (ey/len)*push;
 
-    tctx.fillStyle = "rgba(10,10,11,0.82)";
-    tctx.strokeStyle = "rgba(255,255,255,0.25)";
+    tctx.fillStyle="rgba(10,10,11,0.82)";
+    tctx.strokeStyle="rgba(255,255,255,0.25)";
     tctx.fillRect(px - w/2, py - h/2, w, h);
     tctx.strokeRect(px - w/2, py - h/2, w, h);
-    tctx.fillStyle = "#e6e6e6";
-    tctx.fillText(label, px - w/2 + pad, py);
+    tctx.fillStyle="#e6e6e6"; tctx.fillText(label, px - w/2 + pad, py);
   }
   tctx.restore();
 }
@@ -645,7 +616,7 @@ function drawWarehouseLabels(){
 //// ---------------------- Optional CARTO labels ----------------------
 
 async function addCartoLabels(){
-  if (!CARTO_STYLE_JSON_URL) { log("CARTO labels skipped.", false); return; }
+  if (!CARTO_STYLE_JSON_URL) return;
   try{
     const resp = await fetch(CARTO_STYLE_JSON_URL);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -653,48 +624,42 @@ async function addCartoLabels(){
     for (const [sid, src] of Object.entries(cartoStyle.sources||{})){
       if (!map.getSource(sid)) map.addSource(sid, src);
     }
-    (cartoStyle.layers||[]).filter(l => l.type === "symbol").forEach(l => {
+    (cartoStyle.layers||[]).filter(l=>l.type==="symbol").forEach(l=>{
       const layer = JSON.parse(JSON.stringify(l));
-      if (!map.getLayer(layer.id)) { try { map.addLayer(layer); } catch(e){} }
+      if (!map.getLayer(layer.id)) { try{ map.addLayer(layer); }catch(e){} }
     });
-    log("CARTO labels added.", false);
-  }catch(e){ console.warn(e); log("CARTO labels failed; continuing.", false); }
+  }catch(e){ console.warn("CARTO labels failed", e); }
 }
 
 //// ------------------------- Scenario loading -------------------------
 
-window.loadScenario = async function(file,labelFromCaller){
+window.loadScenario = async function(file, humanLabel){
   try{
-    clearLog(); log(`Loading scenario: ${file}`, false); // voice off for this one
+    clearLog();
 
     trucks.length = 0;
 
+    // fetch JSON (cache-bust)
     const url = `${file}${file.includes('?') ? '&' : '?'}v=${Date.now()}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} fetching ${file}`);
-
     const raw = await res.text();
-    let data; try { data = JSON.parse(raw); }
-    catch (e) { throw new Error(`JSON parse error: ${e.message}\nPreview: ${raw.slice(0,160)}…`); }
+    let data; try{ data = JSON.parse(raw); } catch(e){ throw new Error(`JSON parse error: ${e.message}`); }
 
+    // build reroute map
     const reroutes = new Map();
     if (Array.isArray(data.reroutes)) for (const r of data.reroutes) {
       if (Array.isArray(r.path) && r.truckId) reroutes.set(r.truckId, r.path.slice());
     }
 
-    let total=0, delayed=0;
-    for (const tr of (data.trucks||[])){
-      const isDelayed = (tr.status && String(tr.status).toLowerCase()==="delayed") || (tr.delay_hours||0)>0;
-      spawnTruck(tr, reroutes);
-      total++; if (isDelayed) delayed++;
-    }
+    // spawn trucks
+    for (const tr of (data.trucks||[])) spawnTruck(tr, reroutes);
 
-    // Speak only the high-level line if provided
-    const isAfter=/after/i.test(file);
-    const label = labelFromCaller || (isAfter ? "After correction" : "Normal operations");
-    if (typeof data?.commentary?.static === 'string') {
-      ttsEnq(`${label}: ${data.commentary.static}`);
-    }
+    // speak a clean scenario name (no filenames)
+    const say = humanLabel || (/after/i.test(file) ? "After Correction" : "Before Disruption");
+    ttsEnq(say);
+
+    // optional timeline narration
     let tl = data?.commentary?.timeline;
     if (tl) tl = Array.isArray(tl) ? tl : (typeof tl === 'object' ? Object.values(tl) : null);
     if (Array.isArray(tl)) {
@@ -707,7 +672,8 @@ window.loadScenario = async function(file,labelFromCaller){
       }
     }
   } catch (err) {
-    console.error(err); log(`Error: ${err.message}`, false);
+    console.error(err);
+    ttsEnq("There was an error loading the scenario.");
   }
 };
 
@@ -715,9 +681,9 @@ window.loadScenario = async function(file,labelFromCaller){
 
 map.on("load", async () => {
   resizeCanvas();
-  await addRoadLayers();     // GeoJSON → vector tiles; + triangle glow
+  await addRoadLayers();     // motorways + triangle glow
   await addCartoLabels();    // optional
-  loadScenario("scenario_before.json","Normal operations");
+  loadScenario("scenario_before.json","Before Disruption");
 });
 map.on("render", () => {
   drawTrucks();
