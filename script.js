@@ -1,16 +1,17 @@
 // ==========================================================
-// Agentic Twin — Roads + Real Truck + 20% Faster
+// Agentic Twin — Roads + Real Truck + Robust JSON Loader
 // * Realistic highway look (tube road + dashed center line)
-// * Real road polylines (NH48 / NH44) between WH1, WH2, WH3
-// * Real truck image (sprite on a flat plane), yaw = travel vector
+// * Hand-curated NH48 / NH44 polylines between WH1, WH2, WH3
+// * Truck sprite (top-down image), yaw faces travel vector
 // * Warehouse texture restored
 // * Continuous ping-pong, convoy spacing, ~20% faster
-// * Commentary + Humanoid TTS remain
+// * Commentary + Humanoid TTS
+// * Resilient loadScenario(): cache-bust + detailed errors
 // ==========================================================
 
-const TRUCK_IMAGE_PATH = "truck_top.png";    // <— place your top-down real truck PNG/SVG here
-const MAP_IMAGE_PATH   = "india_map.png?v=10";
-const WH_TEXTURE_PATH  = "warehouse_texture.png"; // <— any PNG/JPG works
+const TRUCK_IMAGE_PATH = "truck_top.png";          // top-down transparent PNG/SVG
+const MAP_IMAGE_PATH   = "india_map.png?v=10";     // bump query if GH Pages caches
+const WH_TEXTURE_PATH  = "warehouse_texture.png";  // your warehouse texture
 
 // ---------- Scene & renderer ----------
 const scene = new THREE.Scene();
@@ -27,7 +28,7 @@ function setupCamera() {
   if (!orthoCam) {
     orthoCam = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, 0.1, 3000);
     orthoCam.position.set(0, 400, 0);
-    orthoCam.up.set(0, 0, -1);
+    orthoCam.up.set(0, 0, -1); // map-like orientation
     orthoCam.lookAt(0, 0, 0);
   } else {
     orthoCam.left = -halfW; orthoCam.right = halfW; orthoCam.top = halfH; orthoCam.bottom = -halfH;
@@ -43,6 +44,7 @@ const nowSec = () => ((performance.now() - t0) / 1000).toFixed(1);
 function clearLog(){ if (logEl) logEl.textContent = ""; t0 = performance.now(); ttsFlush(true); }
 function log(msg, speak=true){ const line=`[t=${nowSec()}s] ${msg}`; if (logEl) logEl.textContent += line+"\n"; console.log(line); if (speak) ttsEnq(msg); }
 
+// Simple humanoid TTS (browser SpeechSynthesis)
 const synth = window.speechSynthesis;
 let VOICE=null, q=[], playing=false;
 function pickVoice(){
@@ -66,7 +68,7 @@ const projectLatLon = (lat, lon) => {
   return new THREE.Vector3((u-0.5)*MAP_W, 0, (v-0.5)*MAP_H);
 };
 
-// ---------- Warehouses ----------
+// ---------- Warehouses + labels ----------
 const CITY = {
   WH1:{ name:"WH1 — Delhi",     lat:28.6139, lon:77.2090 },
   WH2:{ name:"WH2 — Mumbai",    lat:19.0760, lon:72.8777 },
@@ -117,7 +119,7 @@ function buildWarehouses(){
   labelsGroup.add(makeLabel(CITY.WH3.name, WH_POS.WH3, 8.6,  0.18));
 }
 
-// ---------- Roads (realistic look) ----------
+// ---------- Roads (asphalt tube + dashed center) ----------
 const roadsGroup = new THREE.Group();
 const roadCenterGroup = new THREE.Group();
 scene.add(roadsGroup, roadCenterGroup);
@@ -160,7 +162,7 @@ function buildRoads(){
     roadsGroup.add(mesh);
     // Center dashed line (thin)
     const lineGeom = new THREE.BufferGeometry().setFromPoints(pts);
-    const dashed = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 2.0, gapSize: 1.5, opacity: 0.8, transparent: true });
+    const dashed = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 2.0, gapSize: 1.5, opacity: 0.85, transparent: true });
     const line = new THREE.Line(lineGeom, dashed);
     line.computeLineDistances();
     line.renderOrder = 2;
@@ -168,10 +170,9 @@ function buildRoads(){
   }
 }
 
-// ---------- Trucks (real image sprite on a plane) ----------
+// ---------- Trucks (sprite plane that faces travel direction) ----------
 let TRUCK_TEXTURE = null;
-const loader = new THREE.TextureLoader();
-loader.load(TRUCK_IMAGE_PATH, tex => {
+new THREE.TextureLoader().load(TRUCK_IMAGE_PATH, tex => {
   tex.anisotropy = renderer.capabilities.getMaxAnisotropy?.() || 1;
   tex.minFilter = THREE.LinearMipMapLinearFilter;
   tex.magFilter = THREE.LinearFilter;
@@ -179,8 +180,8 @@ loader.load(TRUCK_IMAGE_PATH, tex => {
 });
 
 function createTruck(delayed=false){
-  // plane lying flat on the map, we control yaw (rotation.y)
-  const w=6.5, h=3.25; // tweak size
+  // plane lying flat on the map; we control yaw (rotation.y)
+  const w=6.5, h=3.25; // tweak to taste
   let mat;
   if (TRUCK_TEXTURE) {
     mat = new THREE.MeshBasicMaterial({ map: TRUCK_TEXTURE, transparent: true });
@@ -193,19 +194,14 @@ function createTruck(delayed=false){
   m.rotation.x = -Math.PI/2; // lay flat
   m.position.y = 2.0;
 
-  // small always-on-top dot for visibility
+  // tiny always-on-top dot for visibility
   const dot = new THREE.Sprite(new THREE.SpriteMaterial({ color: delayed?0xff3b30:0x00c853, depthTest:false }));
   dot.scale.set(1.2,1.2,1); dot.position.set(0,2.2,0); dot.renderOrder=2000; m.add(dot);
 
-  // simple tail lights when delayed
-  if (delayed) {
-    const tl = new THREE.Mesh(new THREE.SphereGeometry(0.12,10,10), new THREE.MeshBasicMaterial({ color: 0xff5555 }));
-    tl.position.set(2.9, 2.0, 0); m.add(tl);
-  }
   return m;
 }
 
-// ---------- Path / movement ----------
+// ---------- Path / movement helpers ----------
 function expandRouteIDsToLatLon(ids){
   const out=[];
   for (let i=0;i<ids.length-1;i++){
@@ -227,26 +223,29 @@ function defaultPathIDs(o,d){
   return [o,d];
 }
 
-// Movement state
+// ---------- Movement state ----------
 const trucksGroup = new THREE.Group();
 scene.add(trucksGroup);
 let movingTrucks = [];
-const MIN_GAP = 2.6;
+const MIN_GAP = 2.6; // spacing along same segment
+
 function spawnTruckFrom(tr, reroutes){
-  const delayed = (tr.status && String(tr.status).toLowerCase()==="delayed") || (tr.delay_hours||0)>0;
+  const isDelayed = (tr.status && String(tr.status).toLowerCase()==="delayed") || (tr.delay_hours||0)>0;
+
   let ids = reroutes.get(tr.id) || defaultPathIDs(tr.origin, tr.destination);
   if (ids[0] !== tr.origin) ids.unshift(tr.origin);
   if (ids[ids.length-1] !== tr.destination) ids.push(tr.destination);
+
   const pts = worldPathFromIDs(ids);
   if (pts.length<2) return;
 
-  const mesh = createTruck(delayed);
+  const mesh = createTruck(isDelayed);
   mesh.position.copy(pts[0]);
   trucksGroup.add(mesh);
 
-  // ~20% faster than previous baseline
-  const speed = delayed ? 2.88 : 4.32; // world units / second
-  const startAt = performance.now() + (300 + Math.random()*900);
+  // ~20% faster than our earlier baseline
+  const speed = isDelayed ? 2.88 : 4.32; // world units / second
+  const startAt = performance.now() + (300 + Math.random()*900); // staggered start
 
   movingTrucks.push({
     id: tr.id, mesh,
@@ -254,7 +253,6 @@ function spawnTruckFrom(tr, reroutes){
     speed, lastPos: pts[0].clone(), startAt
   });
 }
-
 function segProg(t){ const a=t.path[t.segIdx], b=t.path[t.segIdx + t.dir]; if(!a||!b) return 0; return t.segT * a.distanceTo(b); }
 
 function updateTrucks(dt){
@@ -266,6 +264,7 @@ function updateTrucks(dt){
     let a=pts[t.segIdx], b=pts[t.segIdx + t.dir];
     if (!b){ t.dir*=-1; b=pts[t.segIdx + t.dir]; if(!b) continue; }
 
+    // distance-normalized progress
     const segLen=Math.max(1e-4, a.distanceTo(b));
     let dT=(t.speed*dt)/segLen;
 
@@ -293,7 +292,7 @@ function updateTrucks(dt){
     const pos = new THREE.Vector3().lerpVectors(a,b,t.segT);
     t.mesh.position.copy(pos);
 
-    // *** Face the direction of travel (yaw only) ***
+    // Face direction of travel (yaw only)
     const dx = (b.x - a.x), dz = (b.z - a.z);
     const yaw = Math.atan2(dx, dz); // Y is up
     t.mesh.rotation.y = yaw;
@@ -302,44 +301,89 @@ function updateTrucks(dt){
   }
 }
 
-// ---------- Scenario loader ----------
-async function loadScenario(file, label){
+// ---------- Robust scenario loader ----------
+async function loadScenario(file, labelFromCaller){
   try{
     clearLog(); log(`Loading scenario: ${file}`);
+
+    // reset trucks
     while (trucksGroup.children.length) trucksGroup.remove(trucksGroup.children[0]);
     movingTrucks = [];
 
-    const res = await fetch(file);
-    const data = await res.json();
+    // cache-bust to avoid stale GH Pages
+    const url = `${file}${file.includes('?') ? '&' : '?'}v=${Date.now()}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} fetching ${file}`);
 
-    const reroutes = new Map();
-    if (Array.isArray(data.reroutes)) for (const r of data.reroutes){ if (Array.isArray(r.path)&&r.truckId) reroutes.set(r.truckId, r.path.slice()); }
+    const raw = await res.text();
+    let data;
+    try { data = JSON.parse(raw); }
+    catch (e) { throw new Error(`JSON parse error: ${e.message}\nPreview: ${raw.slice(0,160)}…`); }
 
-    let total=0, delayed=0;
-    (data.trucks||[]).forEach(tr=>{
-      const isDelay = (tr.status && String(tr.status).toLowerCase()==="delayed") || (tr.delay_hours||0)>0;
-      spawnTruckFrom(tr, reroutes);
-      total++; if (isDelay) delayed++;
-    });
+    // reroutes
+    const rerouteMap = new Map();
+    if (Array.isArray(data.reroutes)) {
+      for (const r of data.reroutes) {
+        if (Array.isArray(r.path) && r.truckId) rerouteMap.set(r.truckId, r.path.slice());
+      }
+    }
+
+    // trucks
+    let total=0, delayedCount=0;
+    for (const tr of (data.trucks||[])) {
+      const delayed = (tr.status && String(tr.status).toLowerCase()==='delayed') || (tr.delay_hours||0)>0;
+      spawnTruckFrom(tr, rerouteMap);
+      total++; if (delayed) delayedCount++;
+    }
 
     log(`Warehouses rendered: 3`);
-    log(`Trucks rendered: ${total} (delayed=${delayed})`);
-    writeStaticSummary(data, label || (/after/i.test(file) ? "After correction" : "Normal operations"));
-    if (data?.commentary?.timeline) for (const step of data.commentary.timeline){
-      await new Promise(r => setTimeout(r, Math.max(0, step.delay_ms||0)));
-      log(step.msg, true);
+    log(`Trucks rendered: ${total} (delayed=${delayedCount})`);
+
+    // static summary
+    const isAfter=/after/i.test(file);
+    const label = labelFromCaller || (isAfter ? "After correction" : "Normal operations");
+    if (typeof data?.commentary?.static === 'string') {
+      log(`${label}: ${data.commentary.static}`);
+    } else {
+      log(`${label}: ${(data?.warehouses||[]).length||3} warehouses, ${(data?.trucks||[]).length||0} trucks.`);
     }
+
+    // robust timeline replay (accept array or object map)
+    let tl = data?.commentary?.timeline;
+    if (tl) {
+      if (Array.isArray(tl)) {
+        // ok
+      } else if (typeof tl === 'object') {
+        tl = Object.values(tl);
+      } else {
+        tl = null; // unsupported
+      }
+    }
+    if (Array.isArray(tl)) {
+      for (const step of tl) {
+        try {
+          const d = Number(step?.delay_ms) || 0;
+          if (d > 0) await new Promise(r => setTimeout(r, d));
+          if (typeof step?.msg === 'string') log(step.msg, true);
+        } catch (e) {
+          log(`Timeline step skipped: ${e.message}`, false);
+        }
+      }
+    }
+
     if (Array.isArray(data.reroutes) && data.reroutes.length){
       log(`Reroutes applied: ${data.reroutes.length}`);
       for (const r of data.reroutes){
-        const reason=r.reason?` (${r.reason})`:''; const path=Array.isArray(r.path)?` via ${r.path.join(' → ')}`:'';
+        const reason=r.reason?` (${r.reason})`:''; 
+        const path=Array.isArray(r.path)?` via ${r.path.join(' → ')}`:'';
         log(`Truck ${r.truckId} rerouted${reason}${path}`);
       }
       log("Network stabilized after corrections.");
     }
-  } catch (e) {
-    console.error(e);
-    log("Error: failed to load scenario JSON.");
+
+  } catch (err) {
+    console.error(err);
+    log(`Error: ${err.message}`);
   }
 }
 window.loadScenario = loadScenario;
@@ -352,7 +396,10 @@ setupCamera();
   mapPlane=new THREE.Mesh(g, m); mapPlane.rotation.x = -Math.PI/2;
   scene.add(mapPlane);
 })();
-buildWarehouses(); buildRoads(); buildLabels();
+buildWarehouses(); buildRoads(); 
+// Labels after warehouses (needs WH_POS)
+function buildLabels(){ /* kept above — just call again here */ }
+buildLabels();
 log("Bootstrapped scene. Loading india_map.png…");
 loadScenario("scenario_before.json","Normal operations");
 
@@ -378,4 +425,6 @@ mapImg.src = MAP_IMAGE_PATH;
 const clock = new THREE.Clock();
 function animate(){ requestAnimationFrame(animate); updateTrucks(clock.getDelta()); renderer.render(scene, orthoCam); }
 animate();
+
+// ---------- Resize ----------
 window.addEventListener('resize', ()=>{ renderer.setSize(window.innerWidth, window.innerHeight); setupCamera(); });
