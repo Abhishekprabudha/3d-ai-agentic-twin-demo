@@ -1,93 +1,55 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>3D AI Agentic Twin Demo</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agentic Twin — Staged Disruptions</title>
+  <link href="https://unpkg.com/maplibre-gl@3.6.1/dist/maplibre-gl.css" rel="stylesheet" />
   <style>
-    html, body { margin: 0; height: 100%; background: #0a0a0b; color: #e6e6e6; font-family: system-ui, Segoe UI, Roboto, sans-serif; }
-    #map { position: fixed; inset: 0; }
-    #trucksCanvas { position: fixed; inset: 0; pointer-events: none; }
-
-    #buttons { position: fixed; top: 12px; left: 12px; display: flex; gap: 8px; z-index: 20; }
-    #buttons button {
+    html, body, #map { height: 100%; margin: 0; background: #0a0a0b; }
+    #ui {
+      position: fixed; top: 12px; left: 12px; display: flex; gap: 8px; z-index: 10;
+    }
+    #ui button {
       background: #111318; color: #e6e6e6; border: 1px solid #2a2a2a;
-      padding: 8px 12px; border-radius: 10px; cursor: pointer;
+      padding: 8px 12px; border-radius: 10px; cursor: pointer; font: 14px/1.2 system-ui, Segoe UI, Roboto, sans-serif;
     }
-    #buttons button:hover { background: #191b22; }
+    #ui button:hover { background: #191b22; }
 
-    /* Commentary (hidden by script unless you switch it back on) */
-    #commentary {
-      position: fixed; right: 12px; top: 12px; width: 420px; max-height: 70vh; overflow: auto;
-      background: rgba(9,10,12,0.92); color: #e6e6e6; border: 1px solid #2a2a2a; padding: 12px; border-radius: 10px; z-index: 19;
+    /* Warehouse stats card */
+    #stats {
+      position: fixed; right: 12px; top: 12px; width: 300px; z-index: 10;
+      background: rgba(11,11,13,0.9); color: #e6e6e6; border: 1px solid #2a2a2a;
+      border-radius: 12px; padding: 12px; font: 13px/1.35 system-ui, Segoe UI, Roboto, sans-serif;
+      backdrop-filter: blur(4px);
     }
-    #commentary h3 { margin: 0 0 6px 0; font-size: 14px; }
-    #commentary pre { white-space: pre-wrap; margin: 0; font-size: 12px; line-height: 1.45; }
-
-    /* Tooltip for warehouse hover */
-    #tooltip {
-      position: fixed; z-index: 30; pointer-events: none;
-      background: rgba(10,12,16,0.95); border: 1px solid #2a2a2a; border-radius: 10px;
-      padding: 10px 12px; font-size: 12px; color:#e6e6e6; box-shadow: 0 6px 18px rgba(0,0,0,.35);
-      transform: translate(-50%, calc(-100% - 14px)); display: none;
-    }
-    #tooltip .h { font-weight: 600; margin-bottom: 4px; font-size: 13px; }
-    #tooltip .row { display:flex; gap:8px; margin-top:2px; }
-    #tooltip .k { opacity:.75; min-width:92px; }
-    #tooltip .v { font-weight:600; }
-
-    /* Timeline scrubber */
-    #timeline {
-      position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
-      width: min(840px, 72vw); z-index: 22; user-select: none;
-      background: rgba(10,12,16,0.92); border: 1px solid #2a2a2a; border-radius: 12px; padding: 10px 12px;
-      display:flex; align-items:center; gap: 10px;
-    }
-    #tlPlay, #tlSpeed {
-      background: #111318; color:#e6e6e6; border:1px solid #2a2a2a; border-radius: 10px; padding: 6px 10px; cursor:pointer;
-    }
-    #tlPlay:hover, #tlSpeed:hover { background:#191b22; }
-    #barWrap { position:relative; flex: 1 1 auto; height: 10px; border-radius: 10px; background:#12151b; overflow:hidden; cursor:pointer; }
-    #barProg { position:absolute; left:0; top:0; height:100%; background: linear-gradient(90deg,#66e2ff 0%,#4ad6ff 100%); width:0%; }
-    .marker {
-      position:absolute; top:-2px; width:8px; height:14px; border-radius:2px; background:#ffd54a; box-shadow:0 0 0 1px #2a2a2a;
-    }
+    #stats h3 { margin: 0 0 8px 0; font-size: 14px; }
+    #stats table { width: 100%; border-collapse: collapse; }
+    #stats th, #stats td { padding: 6px 4px; border-bottom: 1px solid #24262c; font-size: 12px; }
+    #stats th { color: #aab3bd; text-align: left; font-weight: 600; }
+    #stats .pos { color: #00d08a; }
+    #stats .neg { color: #ff6b6b; }
   </style>
-
-  <link href="https://cdn.jsdelivr.net/npm/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet">
 </head>
 <body>
+  <div id="ui">
+    <button id="btnBefore">Before Disruption</button>
+    <button id="btnAfter">After Correction</button>
+  </div>
+
+  <div id="stats">
+    <h3>Warehouse Status</h3>
+    <table id="statsTable">
+      <thead>
+        <tr><th>Warehouse</th><th>Inv</th><th>In</th><th>Out</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
   <div id="map"></div>
-  <canvas id="trucksCanvas"></canvas>
 
-  <div id="buttons">
-    <button onclick="loadScenario('scenario_before.json','Before Disruption')">Before Disruption</button>
-    <button onclick="loadScenario('scenario_after.json','After Correction')">After Correction</button>
-  </div>
-
-  <div id="commentary" aria-live="polite">
-    <h3>Commentary</h3>
-    <pre id="commentaryLog"></pre>
-  </div>
-
-  <!-- Tooltip -->
-  <div id="tooltip">
-    <div class="h" id="tipTitle"></div>
-    <div class="row"><div class="k">Inventory</div><div class="v" id="tipInv">–</div></div>
-    <div class="row"><div class="k">Inbound (delayed)</div><div class="v" id="tipIn">–</div></div>
-    <div class="row"><div class="k">Outbound</div><div class="v" id="tipOut">–</div></div>
-  </div>
-
-  <!-- Timeline scrubber -->
-  <div id="timeline">
-    <button id="tlPlay">▶︎ Play</button>
-    <button id="tlSpeed">1×</button>
-    <div id="barWrap"><div id="barProg"></div></div>
-  </div>
-
-  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
-  <script src="script.js?v=wow-timeline-1"></script>
-
-  <noscript>Please enable JavaScript to view the demo.</noscript>
+  <script src="https://unpkg.com/maplibre-gl@3.6.1/dist/maplibre-gl.js"></script>
+  <script src="script.js"></script>
 </body>
 </html>
