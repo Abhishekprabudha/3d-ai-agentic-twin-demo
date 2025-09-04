@@ -30,14 +30,14 @@
   "commentary": {
     "static": "Baseline network with five warehouses. Several disruptions are emerging; Mumbai and Kolkata may face short-term shortages if delays persist.",
     "timeline": [
-      { "delay_ms":  400, "msg": "Initial assessment: Five warehouses online — Delhi, Mumbai, Bangalore, Hyderabad, Kolkata." },
-      { "delay_ms":  600, "msg": "Disruption 1: Landslide on the Delhi–Mumbai corridor. Truck T1 delayed by six hours." },
-      { "delay_ms":  600, "msg": "Disruption 2: Heavy rains on the Bangalore–Mumbai link. Truck T7 delayed by five hours." },
-      { "delay_ms":  600, "msg": "Disruption 3: Multi-vehicle accident near Hyderabad affecting Truck T11 bound to Mumbai." },
-      { "delay_ms":  600, "msg": "Disruption 4: Roadworks on the Delhi–Kolkata route slowing Truck T3." },
-      { "delay_ms":  600, "msg": "Disruption 5: Congestion leaving Kolkata toward Mumbai, impacting Truck T14." },
-      { "delay_ms":  800, "msg": "Risk: Mumbai outbound and inbound flows reduced. Inventory at Mumbai trending to deficit within 10–12 hours if no reroute is applied." },
-      { "delay_ms":  800, "msg": "Risk: Kolkata faces replenishment lag due to T3 and T14 delays." }
+      { "delay_ms": 400, "msg": "Initial assessment: Five warehouses online — Delhi, Mumbai, Bangalore, Hyderabad, Kolkata." },
+      { "delay_ms": 600, "msg": "Disruption 1: Landslide on the Delhi–Mumbai corridor. Truck T1 delayed by six hours." },
+      { "delay_ms": 600, "msg": "Disruption 2: Heavy rains on the Delhi–Hyderabad link. Traffic is slowed or stopped along long stretches." },
+      { "delay_ms": 600, "msg": "Disruption 3: Multi-vehicle accident near Hyderabad affecting Truck T11 bound to Mumbai." },
+      { "delay_ms": 600, "msg": "Disruption 4: Roadworks on the Delhi–Kolkata route slowing Truck T3." },
+      { "delay_ms": 600, "msg": "Disruption 5: Congestion leaving Kolkata toward Mumbai, impacting Truck T14." },
+      { "delay_ms": 800, "msg": "Risk: Mumbai outbound and inbound flows reduced. Inventory at Mumbai trending to deficit within 10–12 hours if no reroute is applied." },
+      { "delay_ms": 800, "msg": "Risk: Kolkata faces replenishment lag due to T3 and T14 delays." }
     ]
   }
 }
