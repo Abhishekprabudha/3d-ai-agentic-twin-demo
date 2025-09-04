@@ -1,15 +1,13 @@
 /* =========================================================================
-   Agentic Twin — Click-Driven Disrupt/Correct + Normal
-   - White base routes
-   - Click "Disrupt": red route, ALL impacted trucks pause mid-segment,
-     slow narration ends with request to click "Correct"
-   - Click "Correct": narration begins "AI has corrected the disruption",
-     green reroute shown (multi-segment), trucks resume along detour
-   - Click "Normal": clear highlights, unpause, restore baseline
-   - Predictive stats update per step
+   Agentic Twin — Disrupt → Correct → Normal (Click-Driven v2)
+   - White base routes; only active corridor is red; fix is green
+   - One disruption per Disrupt click; narration ends by asking to click Correct
+   - Correct: "AI has corrected the disruption", show green reroute, resume trucks
+   - Normal: clear highlights, unpause, restore baseline
+   - Predictive stats use ACTUAL paused-truck count for impact
    ======================================================================= */
 
-/* -------------------- small on-screen debug (optional) -------------------- */
+/* -------------------- tiny debug pill -------------------- */
 let __DBG=null;
 function debug(msg){
   if(!__DBG){
@@ -83,54 +81,86 @@ const DEFAULT_BEFORE={
   ]
 };
 
-/* -------------------- stepped disruptions (explicit reroutes) -------------------- */
+/* -------------------- 5 clean disruption steps w/ logical reroutes ---------- */
 const STEPS=[
-  {
+  { // D1: Delhi–Mumbai reroute via Hyderabad
     id:"D1",
     route:["WH1","WH2"],
     reroute:[["WH1","WH4"],["WH4","WH2"]],
     cause:[
       "Disruption one.",
-      "The Delhi to Mumbai corridor faces a temporary closure near Rajasthan.",
-      "All trucks using this route are held in place to avoid queue buildup.",
-      "When ready, please click the Correct button."
+      "Delhi to Mumbai corridor is closed near Rajasthan.",
+      "All trucks on this corridor are safely paused.",
+      "Please click the Correct button to apply the AI fix."
     ],
     fix:[
       "AI has corrected the disruption.",
-      "Traffic is diverted via Hyderabad: Delhi to Hyderabad, then Hyderabad to Mumbai.",
-      "Green links show the reroute now in effect."
+      "Traffic is rerouted via Hyderabad: Delhi to Hyderabad, then Hyderabad to Mumbai.",
+      "Green links show the new safe detour. Flows are resuming."
     ]
   },
-  {
+  { // D2: Hyderabad–Delhi reroute via Mumbai→Bangalore→Delhi
     id:"D2",
     route:["WH4","WH1"],
     reroute:[["WH4","WH2"],["WH2","WH3"],["WH3","WH1"]],
     cause:[
       "Disruption two.",
       "Hyderabad to Delhi is impacted by a long work zone.",
-      "All trucks on this corridor are paused.",
-      "Click the Correct button to apply the AI reroute."
+      "All trucks on this corridor are paused in place.",
+      "Click Correct to rebalance via Mumbai and Bangalore."
     ],
     fix:[
       "AI has corrected the disruption.",
-      "We load-balance via Mumbai and Bangalore to Delhi.",
-      "Observe the green path spanning Hyderabad to Mumbai, Mumbai to Bangalore, and Bangalore to Delhi."
+      "We are diverting Hyderabad to Mumbai, Mumbai to Bangalore, and Bangalore to Delhi.",
+      "Green segments confirm the balanced detour is active."
     ]
   },
-  {
+  { // D3: Kolkata–Mumbai reroute via Hyderabad
     id:"D3",
     route:["WH5","WH2"],
     reroute:[["WH5","WH4"],["WH4","WH2"]],
     cause:[
       "Disruption three.",
-      "Kolkata to Mumbai sees flooding risk across central India.",
+      "Kolkata to Mumbai is constrained by flood-prone sections.",
       "All trucks on this link are held.",
-      "Click Correct to detour via Hyderabad."
+      "Click Correct to divert through Hyderabad."
     ],
     fix:[
       "AI has corrected the disruption.",
-      "We divert Kolkata to Hyderabad, then onward to Mumbai.",
-      "Green segments highlight the safe path now adopted."
+      "We route Kolkata to Hyderabad and onward to Mumbai.",
+      "Green links indicate the detour now in effect."
+    ]
+  },
+  { // D4: Mumbai–Bangalore reroute via Hyderabad
+    id:"D4",
+    route:["WH2","WH3"],
+    reroute:[["WH2","WH4"],["WH4","WH3"]],
+    cause:[
+      "Disruption four.",
+      "Mumbai to Bangalore faces a crash-related closure.",
+      "All trucks on this corridor are paused.",
+      "Click Correct to go via Hyderabad."
+    ],
+    fix:[
+      "AI has corrected the disruption.",
+      "Detour is Mumbai to Hyderabad, then Hyderabad to Bangalore.",
+      "Green links show the new route. Queues are clearing."
+    ]
+  },
+  { // D5: Kolkata–Bangalore reroute via Hyderabad
+    id:"D5",
+    route:["WH5","WH3"],
+    reroute:[["WH5","WH4"],["WH4","WH3"]],
+    cause:[
+      "Final disruption.",
+      "Kolkata to Bangalore is blocked due to a landslide risk.",
+      "All trucks on this corridor are paused.",
+      "Click Correct to proceed with the safe detour."
+    ],
+    fix:[
+      "AI has corrected the disruption.",
+      "We divert Kolkata to Hyderabad and then Hyderabad to Bangalore.",
+      "Green links confirm stable flow on the detour."
     ]
   }
 ];
@@ -182,18 +212,16 @@ function ensureRoadLayers(){
       paint:{"line-color":"#ffffff","line-opacity":0.9,"line-width":3.0},
       layout:{"line-cap":"round","line-join":"round"}});
   }
-
   if(!map.getSource("alert")) map.addSource("alert",{type:"geojson",data:{type:"FeatureCollection",features:[]}});
   if(!map.getLayer("alert-red")){
     map.addLayer({id:"alert-red",type:"line",source:"alert",
-      paint:{"line-color":"#ff6b6b","line-opacity":0.96,"line-width":4.2},
+      paint:{"line-color":"#ff6b6b","line-opacity":0.98,"line-width":4.6},
       layout:{"line-cap":"round","line-join":"round"}});
   }
-
   if(!map.getSource("fix")) map.addSource("fix",{type:"geojson",data:{type:"FeatureCollection",features:[]}});
   if(!map.getLayer("fix-green")){
     map.addLayer({id:"fix-green",type:"line",source:"fix",
-      paint:{"line-color":"#00d08a","line-opacity":0.96,"line-width":4.8},
+      paint:{"line-color":"#00d08a","line-opacity":0.98,"line-width":5.0},
       layout:{"line-cap":"round","line-join":"round"}});
   }
 }
@@ -201,7 +229,7 @@ function featureForRoute(ids){
   return {type:"Feature",properties:{id:ids.join("-")},
     geometry:{type:"LineString",coordinates:toLonLat(expandIDsToLatLon(ids))}};
 }
-function setSourceFeatures(srcId, features){
+function setSourceFeatures(srcId,features){
   const src=map.getSource(srcId); if(!src) return;
   src.setData({type:"FeatureCollection",features:features||[]});
 }
@@ -272,7 +300,7 @@ function drawVectorTruck(g,w,h,delayed,number){
   g.fillStyle=delayed?"#ff3b30":"#00c853"; g.beginPath(); g.arc(trW*0.32,-trH*0.28,3.2,0,Math.PI*2); g.fill();
 }
 
-/* animation step */
+/* animation */
 let __lastTS=performance.now(), __dt=1/60;
 function drawFrame(){
   if(!ctx) return;
@@ -323,11 +351,10 @@ function drawFrame(){
     const num=truckNumberById.get(T.id)||0;
     ctx.save(); ctx.translate(x,y); ctx.rotate(theta); drawVectorTruck(ctx,w,h,T.delayed,num); ctx.restore();
   }
-
   drawWarehouses();
 }
 
-/* -------------------- narration (calm) -------------------- */
+/* -------------------- narration -------------------- */
 const synth=window.speechSynthesis; let VOICE=null;
 function pickVoice(){
   const vs=synth?.getVoices?.()||[];
@@ -336,41 +363,34 @@ function pickVoice(){
   return vs[0]||null;
 }
 VOICE=pickVoice(); if(!VOICE&&synth) synth.onvoiceschanged=()=>{VOICE=pickVoice();};
-let ttsTimers=[];
-function clearTTS(){ ttsTimers.forEach(clearTimeout); ttsTimers=[]; try{synth?.cancel?.();}catch(e){} }
+let ttsTimers=[]; function clearTTS(){ ttsTimers.forEach(clearTimeout); ttsTimers=[]; try{synth?.cancel?.();}catch(e){} }
 function speakOnce(text,rate=0.9){ if(!synth||!text) return; const u=new SpeechSynthesisUtterance(String(text)); if(VOICE) u.voice=VOICE; u.rate=rate; u.pitch=1.0; u.volume=1; synth.speak(u); }
-function speakQueue(lines,gap=900,rate=0.9){
-  clearTTS(); let t=0;
-  lines.forEach(line=>{
-    const dur=Math.max(1700,48*line.length);
-    ttsTimers.push(setTimeout(()=>speakOnce(line,rate),t));
-    t+=dur+gap;
-  });
-}
+function speakQueue(lines,gap=950,rate=0.9){ clearTTS(); let t=0; lines.forEach(line=>{ const d=Math.max(1700,48*line.length); ttsTimers.push(setTimeout(()=>speakOnce(line,rate),t)); t+=d+gap; }); }
 
-/* -------------------- scenario + stats -------------------- */
+/* -------------------- scenario + predictive stats -------------------- */
 async function fetchOrDefault(file, fallback){
-  try{
-    const url=`${file}${file.includes("?")?"&":"?"}v=${Date.now()}`;
-    const r=await fetch(url,{cache:"no-store"}); if(!r.ok) throw new Error(`HTTP ${r.status}`);
-    return await r.json();
-  }catch(e){ debug(`Using default scenario (${e.message})`); return fallback; }
+  try{ const r=await fetch(`${file}?v=${Date.now()}`,{cache:"no-store"}); if(!r.ok) throw new Error(`HTTP ${r.status}`); return await r.json(); }
+  catch(e){ debug(`Using default scenario (${e.message})`); return fallback; }
 }
-const baseStats={}; // baseline by WH id
+const baseStats={};
 function computeBaseline(data){
   const inC={}, outC={}; (data.trucks||[]).forEach(t=>{ outC[t.origin]=(outC[t.origin]||0)+1; inC[t.destination]=(inC[t.destination]||0)+1; });
-  (data.warehouses||[]).forEach(w=>{
-    baseStats[w.id]={ inv:w.inventory??500, in:inC[w.id]||0, out:outC[w.id]||0 };
-  });
+  (data.warehouses||[]).forEach(w=>{ baseStats[w.id]={ inv:w.inventory??500, in:inC[w.id]||0, out:outC[w.id]||0 }; });
 }
-function applyPredictive(step, mode){
-  // start from baseline copy
-  const pred={}; for(const id of Object.keys(baseStats)) pred[id]={...baseStats[id]};
+function renderStats(pred){
+  const tbody=document.querySelector("#statsTable tbody"); if(!tbody) return; tbody.innerHTML="";
+  for(const id of Object.keys(CITY)){
+    const s=pred[id]||{inv:"-",in:0,out:0};
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td>${CITY[id].name}</td><td>${s.inv}</td><td class="pos">+${s.in}</td><td class="neg">-${s.out}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+function copyStats(src){ const out={}; for(const k of Object.keys(src)) out[k]={...src[k]}; return out; }
+function applyPredictive(step, mode, pausedCount){
+  const delta = Math.max(1, pausedCount||1); // real impact = number of paused trucks
+  const pred=copyStats(baseStats);
 
-  // simple, clear story:
-  // - Disrupt: origin loses outbound (-2), destination loses inbound (-2) → inv +2 at origin, -2 at destination
-  // - Correct: detour restores the 2 units; intermediate hubs on reroute show +2 in AND +2 out
-  const delta=2;
   if(mode==="disrupt"){
     const [A,B]=step.route;
     pred[A].out = Math.max(0, pred[A].out - delta);
@@ -382,7 +402,6 @@ function applyPredictive(step, mode){
       const A=pairs[0][0], Z=pairs[pairs.length-1][1];
       pred[A].out += delta; pred[Z].in += delta;
       for(const [u,v] of pairs){
-        // intermediate hubs gain pass-through flow
         if(u!==A){ pred[u].in  += delta; }
         if(v!==Z){ pred[v].out += delta; }
       }
@@ -390,33 +409,24 @@ function applyPredictive(step, mode){
   }
   return pred;
 }
-function renderStats(pred){
-  const tbody=document.querySelector("#statsTable tbody"); if(!tbody) return;
-  tbody.innerHTML="";
-  for(const id of Object.keys(CITY)){
-    const s=pred[id]||{inv:"-",in:0,out:0};
-    const tr=document.createElement("tr");
-    tr.innerHTML=`<td>${CITY[id].name}</td>
-      <td>${s.inv}</td>
-      <td class="pos">+${s.in}</td>
-      <td class="neg">-${s.out}</td>`;
-    tbody.appendChild(tr);
-  }
-}
 
 /* -------------------- pause / reroute control -------------------- */
-function odMatch(ids, o, d){ const a=ids[0], b=ids[ids.length-1]; return (a===o&&b===d)||(a===d&&b===o); }
-function setTruckPath(T, latlon, toMid=false){ if(!latlon||latlon.length<2) return; T.latlon=latlon; T.seg=0; T.dir=1; T.t=toMid?0.5:0.0; }
+function defaultPathIDs(o,d){ const k1=keyFor(o,d), k2=keyFor(d,o); if(RP[k1]||RP[k2]) return [o,d]; return (o!=="WH4"&&d!=="WH4")?[o,"WH4",d]:[o,d]; }
+function odMatch(ids,o,d){ const a=ids[0], b=ids[ids.length-1]; return (a===o&&b===d)||(a===d&&b===o); }
+function setTruckPath(T,latlon,toMid=false){ if(!latlon||latlon.length<2) return; T.latlon=latlon; T.seg=0; T.dir=1; T.t=toMid?0.5:0.0; }
+
 function pauseAllOnRoute(step){
   const ids=step.route; const latlon=expandIDsToLatLon(ids);
+  let paused=0;
   for(const T of trucks){
     const baseIDs=defaultPathIDs(T.origin,T.dest);
     if(odMatch(baseIDs, ids[0], ids[1])){
       if(!T.savedPath) T.savedPath={ latlon:[...T.latlon], seg:T.seg, t:T.t, dir:T.dir };
       setTruckPath(T, latlon, true);
-      T.paused=true;
+      T.paused=true; paused++;
     }
   }
+  return paused;
 }
 function unpauseAll(resetToSaved){
   for(const T of trucks){
@@ -428,64 +438,83 @@ function unpauseAll(resetToSaved){
 }
 function reroutePaused(step){
   const full=step.reroute?.length ? expandIDsToLatLon(step.reroute.flat()) : null;
-  if(!full) return;
+  if(!full) return 0;
+  let released=0;
   for(const T of trucks){
     if(!T.paused) continue;
     setTruckPath(T, full, false);
-    T.paused=false; T.savedPath=null;
+    T.paused=false; T.savedPath=null; released++;
   }
+  return released;
 }
 
-/* -------------------- stepper (manual clicks) -------------------- */
-let currentStepIdx=0;
-function showDisruptStep(){
-  clearTTS();
-  // If we've shown a fix and user clicks Disrupt again, move to next step
-  if(currentStepIdx>=STEPS.length) currentStepIdx=0;
+/* -------------------- state machine: normal | disrupt | fixed -------------- */
+let mode="normal"; let currentStepIdx=-1;
+
+function featureFor(ids){ return {type:"Feature",properties:{id:ids.join("-")},geometry:{type:"LineString",coordinates:toLonLat(expandIDsToLatLon(ids))}}; }
+function setAlert(ids){ setSourceFeatures("alert",[featureFor(ids)]); }
+function clearAlert(){ setSourceFeatures("alert",[]); }
+function setFix(pairs){ setSourceFeatures("fix",(pairs||[]).map(pair=>featureFor(pair))); }
+function clearFix(){ setSourceFeatures("fix",[]); }
+
+function startDisrupt(){
+  if(mode==="disrupt"){ speakQueue(["A disruption is already active. Please click the Correct button to proceed."],900,0.92); return; }
+  // advance to next step
+  currentStepIdx = (currentStepIdx + 1) % STEPS.length;
   const step=STEPS[currentStepIdx];
 
-  // highlights
-  setSourceFeatures("fix",[]);
-  setSourceFeatures("alert",[featureForRoute(step.route)]);
-  // pause ALL impacted trucks
-  pauseAllOnRoute(step);
+  clearFix(); setAlert(step.route);
+  const pausedCount=pauseAllOnRoute(step);
 
-  // predictive stats (disruption)
-  const pred=applyPredictive(step,"disrupt");
+  // predictive stats for disruption
+  const pred=applyPredictive(step,"disrupt",pausedCount);
   renderStats(pred);
 
+  // zoom to corridor for clarity
+  fitToRoute(step.route);
+
   // narration
-  speakQueue(step.cause, 950, 0.9);
+  speakQueue([
+    ...step.cause,
+    "Once you are ready, please click the Correct button."
+  ], 950, 0.9);
+
+  mode="disrupt";
 }
-function applyCorrection(){
-  clearTTS();
-  const step=STEPS[currentStepIdx]; if(!step) return;
+function applyCorrect(){
+  if(mode!=="disrupt"){ speakQueue(["No active disruption. Click Disrupt first."],800,0.95); return; }
+  const step=STEPS[currentStepIdx];
 
-  // flip highlights
-  setSourceFeatures("alert",[]);
-  const greenFeats=(step.reroute||[]).map(pair=>featureForRoute(pair));
-  setSourceFeatures("fix",greenFeats);
+  clearAlert(); setFix(step.reroute);
+  const released=reroutePaused(step);
 
-  // release trucks onto detour
-  reroutePaused(step);
-
-  // predictive stats (correction)
-  const pred=applyPredictive(step,"correct");
+  // predictive stats for correction
+  const pred=applyPredictive(step,"correct",released);
   renderStats(pred);
 
-  // narration
-  speakQueue(step.fix, 950, 0.92);
+  // zoom to reroute path
+  fitToRoute(step.reroute.flat());
 
-  // stay on this until the next Disrupt click advances the step
-  currentStepIdx = Math.min(STEPS.length-1, currentStepIdx+1);
+  speakQueue(step.fix, 950, 0.92);
+  mode="fixed";
 }
 function backToNormal(){
   clearTTS();
-  setSourceFeatures("alert",[]); setSourceFeatures("fix",[]);
-  unpauseAll(true); // restore to saved/original paths
-  // restore baseline predictive stats
+  clearAlert(); clearFix();
+  unpauseAll(true); // restore original paths
   renderStats(baseStats);
-  speakQueue(["Returning to normal operations. All corridors open and flowing."], 900, 0.95);
+  speakQueue(["Returning to normal operations. All corridors white and flowing."], 900, 0.95);
+  mode="normal";
+}
+
+/* -------------------- camera helpers -------------------- */
+function fitToRoute(idsOrPairs){
+  const pts = Array.isArray(idsOrPairs[0])
+    ? expandIDsToLatLon(idsOrPairs.flat())
+    : expandIDsToLatLon(idsOrPairs);
+  const b=new maplibregl.LngLatBounds();
+  pts.forEach(p=>b.extend([p[1],p[0]]));
+  map.fitBounds(b,{padding:{top:60,left:60,right:320,bottom:60},duration:700,maxZoom:6.9});
 }
 
 /* -------------------- boot -------------------- */
@@ -494,7 +523,8 @@ const mapReady=new Promise(res=>map.on("load",res));
   await mapReady;
   ensureCanvas(); ensureRoadLayers();
 
-  // rename buttons + add Normal
+  // rename & add buttons
+  const ui=document.getElementById("ui")||document.body;
   const btnBefore=document.getElementById("btnBefore");
   const btnAfter=document.getElementById("btnAfter");
   if(btnBefore) btnBefore.textContent="Disrupt";
@@ -505,13 +535,12 @@ const mapReady=new Promise(res=>map.on("load",res));
     btnNormal=document.createElement("button");
     btnNormal.id="btnNormal"; btnNormal.textContent="Normal";
     btnNormal.style.marginLeft="8px";
-    const bar=document.getElementById("buttons")||document.body;
-    (bar.appendChild)? bar.appendChild(btnNormal) : document.body.appendChild(btnNormal);
+    ui.appendChild(btnNormal);
   }
 
   // wire events
-  if(btnBefore) btnBefore.onclick=()=>showDisruptStep();
-  if(btnAfter)  btnAfter.onclick =()=>applyCorrection();
+  if(btnBefore) btnBefore.onclick=()=>startDisrupt();
+  if(btnAfter)  btnAfter.onclick =()=>applyCorrect();
   btnNormal.onclick=()=>backToNormal();
 
   // scenario & trucks
@@ -521,15 +550,12 @@ const mapReady=new Promise(res=>map.on("load",res));
   trucks.length=0; truckNumberById.clear();
   (data.trucks||[]).forEach((t,i)=>spawnTruck(t,i));
 
+  // initial camera
   const b=new maplibregl.LngLatBounds(); Object.values(CITY).forEach(c=>b.extend([c.lon,c.lat]));
   map.fitBounds(b,{padding:{top:60,left:60,right:320,bottom:60},duration:800,maxZoom:6.8});
 
-  // start in Normal
-  backToNormal();
+  backToNormal(); // start clean
 })();
 
-function tick(){
-  const now=performance.now(); const dt=Math.min(0.05,(now-__lastTS)/1000); __lastTS=now; __dt=dt;
-  drawFrame(); requestAnimationFrame(tick);
-}
+function tick(){ const now=performance.now(); const dt=Math.min(0.05,(now-__lastTS)/1000); __lastTS=now; __dt=dt; drawFrame(); requestAnimationFrame(tick); }
 requestAnimationFrame(tick);
