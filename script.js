@@ -1,17 +1,13 @@
 /* ============================================================
-   Agentic Twin — Focus + Continuous Motion + Sharp Warehouse
-   - Auto fit map to all warehouses on load & scenario change
-   - Prevent truck freeze with a minimum motion step
-   - Draw a crisp SVG warehouse icon (file or embedded fallback)
-   - Keeps the earlier “wow #1” features (motion routes, timeline)
+   Agentic Twin — Focused Load + Continuous Motion + Sharp WH
    ============================================================ */
 
 /* ---------- Map config ---------- */
-const STYLE_URL = "style.json";                    // your MapLibre/MapTiler style
+const STYLE_URL = "style.json";                    // MapLibre style
 const MAP_INIT   = { center:[78.9629,21.5937], zoom:5.0, minZoom:3, maxZoom:12 };
-const SHOW_TEXT_LOG = false;                       // narration only, no text panel
+const SHOW_TEXT_LOG = false;                       // hide text commentary (voice only)
 
-/* ---------- DOM grabs ---------- */
+/* ---------- DOM ---------- */
 const logEl = document.getElementById("commentaryLog");
 const tooltip = document.getElementById("tooltip");
 const tipTitle = document.getElementById("tipTitle");
@@ -35,7 +31,7 @@ const tl = {
   progressMs: 0
 };
 
-/* ---------- Base data ---------- */
+/* ---------- Warehouse coordinates ---------- */
 const CITY = {
   WH1:{ name:"WH1 — Delhi",      lat:28.6139, lon:77.2090 },
   WH2:{ name:"WH2 — Mumbai",     lat:19.0760, lon:72.8777 },
@@ -44,7 +40,7 @@ const CITY = {
   WH5:{ name:"WH5 — Kolkata",    lat:22.5726, lon:88.3639 }
 };
 
-// Densified corridor samples (lat,lon) — readable “highway-ish” lines.
+/* ---------- “Highway-ish” densified corridors (lat,lon) ---------- */
 const RP = {
   "WH1-WH2":[[28.6139,77.2090],[27.0,76.8],[25.6,75.2],[24.1,73.5],[23.0,72.6],[21.17,72.83],[19.9,72.9],[19.076,72.8777]],
   "WH2-WH3":[[19.0760,72.8777],[18.52,73.8567],[16.9,74.5],[15.9,74.5],[13.8,76.4],[12.9716,77.5946]],
@@ -62,7 +58,7 @@ function getRoadLatLon(a,b){ const k1=keyFor(a,b),k2=keyFor(b,a); if(RP[k1]) ret
 function expandIDsToLatLon(ids){ const out=[]; for(let i=0;i<ids.length-1;i++){ const seg=getRoadLatLon(ids[i],ids[i+1]); if(i>0) seg.shift(); out.push(...seg); } return out; }
 function allRoutesGeoJSON(){ const toLonLat=pts=>pts.map(p=>[p[1],p[0]]); return { type:"FeatureCollection", features:Object.keys(RP).map(k=>({ type:"Feature", properties:{id:k}, geometry:{ type:"LineString", coordinates:toLonLat(RP[k])}}))}; }
 
-/* ---------- Map & canvas ---------- */
+/* ---------- Map + canvas ---------- */
 const map = new maplibregl.Map({ container:"map", style:STYLE_URL, center:MAP_INIT.center, zoom:MAP_INIT.zoom, minZoom:MAP_INIT.minZoom, maxZoom:MAP_INIT.maxZoom, attributionControl:true });
 map.addControl(new maplibregl.NavigationControl({visualizePitch:false}), "top-left");
 
@@ -71,7 +67,7 @@ const tctx=trucksCanvas.getContext("2d");
 function resizeCanvas(){ const base=map.getCanvas(); const dpr=window.devicePixelRatio||1; trucksCanvas.width=base.clientWidth*dpr; trucksCanvas.height=base.clientHeight*dpr; trucksCanvas.style.width=base.clientWidth+"px"; trucksCanvas.style.height=base.clientHeight+"px"; tctx.setTransform(dpr,0,0,dpr,0,0); }
 window.addEventListener("resize", resizeCanvas);
 
-/* ---------- TTS (humanoid) ---------- */
+/* ---------- Humanoid TTS (narration only) ---------- */
 const synth = window.speechSynthesis; let VOICE=null, q=[], playing=false;
 function pickVoice(){ const prefs=[/en-IN/i,/English.+India/i,/Natural|Neural/i,/Microsoft|Google/i,/en-GB/i,/en-US/i]; const vs=synth?.getVoices?.()||[]; for(const p of prefs){ const v=vs.find(v=>p.test(v.name)||p.test(v.lang)); if(v) return v; } return vs[0]||null; }
 VOICE=pickVoice(); if(!VOICE&&synth) synth.onvoiceschanged=()=>{ VOICE=pickVoice(); };
@@ -80,36 +76,36 @@ function ttsEnq(t){ if(!synth) return; speakNorm(t).split(/(?<=[.!?;])\s+|(?<=,)
 function playNext(){ if(!synth) return; if(!q.length){ playing=false; return; } playing=true; const u=new SpeechSynthesisUtterance(q.shift()); if(VOICE) u.voice=VOICE; u.rate=1.0; u.pitch=1.02; u.onend=playNext; synth.speak(u); }
 function ttsFlush(cancel){ q=[]; playing=false; if(cancel&&synth) synth.cancel(); }
 
-/* ---------- “Console” logger (hidden by default) ---------- */
+/* ---------- Optional text logger (kept off) ---------- */
 let t0=performance.now(); const nowSec=()=>((performance.now()-t0)/1000).toFixed(1);
 function clearLog(){ if(SHOW_TEXT_LOG&&logEl) logEl.textContent=""; t0=performance.now(); ttsFlush(true); }
 function log(msg,speak=true){ if(SHOW_TEXT_LOG&&logEl) logEl.textContent+=`[t=${nowSec()}s] ${msg}\n`; if(speak) ttsEnq(msg); }
 
-/* ---------- Road layers: OSM motorways + our corridors (glow + motion dash) ---------- */
+/* ---------- OSM roads + our corridors (glow + motion) ---------- */
 function mtKey(){ try{ const src=map.getStyle().sources['satellite']; if(src?.tiles?.length){ const u=new URL(src.tiles[0]); return u.searchParams.get('key'); } }catch(e){} return ""; }
 
 function addVTroads(){
-  // Base OSM tiles for motorways/trunks
-  const key=mtKey();
-  if(!map.getSource("omt")) map.addSource("omt",{ type:"vector", url:`https://api.maptiler.com/tiles/v3/tiles.json?key=${key}` });
+  try{
+    const key=mtKey();
+    if(key && !map.getSource("omt")) map.addSource("omt",{ type:"vector", url:`https://api.maptiler.com/tiles/v3/tiles.json?key=${key}` });
 
-  const f=["match",["get","class"],["motorway","trunk","primary"],true,false];
+    const filter = ["match",["get","class"],["motorway","trunk","primary"],true,false];
 
-  if(!map.getLayer("vt-roads-glow")) map.addLayer({
-    id:"vt-roads-glow", type:"line", source:"omt", "source-layer":"transportation", filter:f, paint:{
-      "line-color":"#59e0ff","line-opacity":0.55,"line-blur":1.4,
-      "line-width":["interpolate",["linear"],["zoom"],4,3.6,6,5.2,8,8.2,10,12.6,12,16.0],"line-join":"round","line-cap":"round"
-    }
-  });
+    if(key && !map.getLayer("vt-roads-glow")) map.addLayer({
+      id:"vt-roads-glow", type:"line", source:"omt", "source-layer":"transportation", filter, paint:{
+        "line-color":"#59e0ff","line-opacity":0.55,"line-blur":1.4,
+        "line-width":["interpolate",["linear"],["zoom"],4,3.6,6,5.2,8,8.2,10,12.6,12,16.0],"line-join":"round","line-cap":"round"
+      }
+    });
+    if(key && !map.getLayer("vt-roads-core")) map.addLayer({
+      id:"vt-roads-core", type:"line", source:"omt", "source-layer":"transportation", filter, paint:{
+        "line-color":"#ffffff","line-opacity":0.9,
+        "line-width":["interpolate",["linear"],["zoom"],4,0.9,6,1.5,8,2.2,10,3.0,12,3.6]
+      }
+    });
+  }catch(e){ console.warn("VT roads skipped:", e); }
 
-  if(!map.getLayer("vt-roads-core")) map.addLayer({
-    id:"vt-roads-core", type:"line", source:"omt", "source-layer":"transportation", filter:f, paint:{
-      "line-color":"#ffffff","line-opacity":0.9,
-      "line-width":["interpolate",["linear"],["zoom"],4,0.9,6,1.5,8,2.2,10,3.0,12,3.6]
-    }
-  });
-
-  // Our corridors as a separate source so we can motion-animate
+  // Our corridor source (always)
   if(!map.getSource("routes")) map.addSource("routes",{ type:"geojson", data:allRoutesGeoJSON() });
   if(!map.getLayer("routes-glow")) map.addLayer({
     id:"routes-glow", type:"line", source:"routes", paint:{
@@ -123,40 +119,24 @@ function addVTroads(){
       "line-width":["interpolate",["linear"],["zoom"],4,1.1,6,1.7,8,2.3,10,3.2,12,3.8]
     }
   });
-
-  // Motion dashes layer (marching ants effect)
   if(!map.getLayer("routes-motion")) map.addLayer({
     id:"routes-motion", type:"line", source:"routes",
-    paint:{
-      "line-color":"#00ffd0",
-      "line-width":["interpolate",["linear"],["zoom"],4,1.2,6,1.4,8,1.8,10,2.2,12,2.6],
-      "line-opacity":0.9,
-      "line-dasharray":[0.5, 2.5]
-    }
+    paint:{ "line-color":"#00ffd0", "line-width":["interpolate",["linear"],["zoom"],4,1.2,6,1.4,8,1.8,10,2.2,12,2.6], "line-opacity":0.9, "line-dasharray":[0.5, 2.5] }
   });
 
-  // Animate dash phase
-  let phase=0;
-  function tickDash(){
-    phase = (phase + 0.12) % 3.0;
-    try { map.setPaintProperty("routes-motion","line-dasharray",[0.5+phase, 2.5]); } catch(e){}
-    requestAnimationFrame(tickDash);
-  }
-  tickDash();
+  let phase=0; (function dashTick(){ phase=(phase+0.12)%3.0; try{ map.setPaintProperty("routes-motion","line-dasharray",[0.5+phase,2.5]); }catch(e){} requestAnimationFrame(dashTick); })();
 }
 
-/* ---------- Warehouse rendering & tooltip ---------- */
-const WAREHOUSE_ICON_SRC = "assets/warehouse.svg"; // place your crisp SVG here
+/* ---------- Warehouse icon (SVG) ---------- */
+const WAREHOUSE_ICON_SRC = "assets/warehouse.svg"; // optional file you can provide
 const EMBEDDED_SVG = `
 <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'>
   <defs>
     <linearGradient id='g1' x1='0' y1='0' x2='0' y2='1'>
-      <stop offset='0' stop-color='#0f1720'/>
-      <stop offset='1' stop-color='#0a0f15'/>
+      <stop offset='0' stop-color='#0f1720'/><stop offset='1' stop-color='#0a0f15'/>
     </linearGradient>
     <linearGradient id='g2' x1='0' y1='0' x2='0' y2='1'>
-      <stop offset='0' stop-color='#ffd44a'/>
-      <stop offset='1' stop-color='#e8b90e'/>
+      <stop offset='0' stop-color='#ffd44a'/><stop offset='1' stop-color='#e8b90e'/>
     </linearGradient>
   </defs>
   <rect x='6' y='6' width='84' height='84' rx='18' fill='url(#g1)' stroke='#66e2ff' stroke-opacity='.5'/>
@@ -169,12 +149,10 @@ const EMBEDDED_SVG = `
   <rect x='52' y='22' width='16' height='8' rx='2' fill='#e3e9f1' stroke='#7b848f'/>
 </svg>`.trim();
 
-let WH_IMG = new Image();
-let WH_READY = false;
+let WH_IMG = new Image(); let WH_READY = false;
 function loadWarehouseIcon(){
   WH_IMG.onload = ()=>{ WH_READY = true; };
   WH_IMG.onerror = ()=>{
-    // Fallback to embedded SVG
     WH_IMG = new Image();
     WH_IMG.onload = ()=>{ WH_READY = true; };
     WH_IMG.src = "data:image/svg+xml;utf8," + encodeURIComponent(EMBEDDED_SVG);
@@ -189,6 +167,7 @@ const warehouseSizeByZoom = z => Math.max(WAREHOUSE_MIN_PX, Math.min(WAREHOUSE_M
 const WAREHOUSE_STATE = new Map();   // id -> {inventory, in, inDelayed, out}
 let scenarioTrucks = [];             // last loaded trucks (raw JSON)
 
+/* ---------- Ring around warehouse ---------- */
 function drawStatusRing(ctx, x, y, S, pct){
   const r = S*0.66;
   const th = Math.max(4, S*0.08);
@@ -212,13 +191,13 @@ function drawStatusRing(ctx, x, y, S, pct){
   ctx.restore();
 }
 
-/* ---------- Trucks (fast, offset, spacing) ---------- */
-const SPEED_MULTIPLIER = 9.5;   // slightly faster
+/* ---------- Trucks (continuous motion) ---------- */
+const SPEED_MULTIPLIER = 9.5;   // feel free to tweak
 const MIN_GAP_PX = 50;
 const CROSS_GAP_PX = 34;
 const LANES_PER_ROUTE = 3;
 const LANE_WIDTH_PX   = 6.5;
-const MIN_STEP = 0.0025;        // <-- prevents slowdowns from ever freezing
+const MIN_STEP = 0.010;         // stronger minimum to prevent stall
 
 const trucks=[];
 function defaultPathIDs(o,d){ if(o===d) return [o]; const k1=keyFor(o,d),k2=keyFor(d,o); if(RP[k1]||RP[k2]) return [o,d]; return (o!=="WH4" && d!=="WH4") ? [o,"WH4",d] : [o,d]; }
@@ -257,18 +236,48 @@ function drawVectorTruck(ctx,w,h,delayed){
   ctx.fillStyle=delayed?"#ff3b30":"#00c853"; ctx.beginPath(); ctx.arc(trW*0.32,-trH*0.28,3.2,0,Math.PI*2); ctx.fill();
 }
 
+function drawWarehousesAndRings(){
+  const z=map.getZoom();
+  for(const id of Object.keys(CITY)){
+    const c=CITY[id];
+    const p=map.project({lng:c.lon,lat:c.lat});
+    const S=warehouseSizeByZoom(z);
+
+    if(WH_READY){
+      tctx.drawImage(WH_IMG, Math.round(p.x-S/2), Math.round(p.y-S/2), S, S);
+    } else {
+      tctx.fillStyle="#1de0ff";
+      tctx.beginPath(); tctx.arc(p.x, p.y, Math.max(8, S*0.2), 0, Math.PI*2); tctx.fill();
+    }
+
+    const st = WAREHOUSE_STATE.get(id);
+    const target = 500; const pct = st ? Math.max(0, Math.min(1, st.inventory/target)) : 0.8;
+    drawStatusRing(tctx, p.x, p.y, S*0.65, pct);
+
+    const label=c.name, pad=6, h=18, w=tctx.measureText(label).width+pad*2;
+    const px=p.x, py=p.y + (S/2) + 16;
+    tctx.fillStyle="rgba(10,10,11,0.82)"; tctx.strokeStyle="rgba(255,255,255,0.22)";
+    tctx.fillRect(px-w/2,py-h/2,w,h); tctx.strokeRect(px-w/2,py-h/2,w,h);
+    tctx.fillStyle="#e6e6e6"; tctx.textBaseline="middle"; tctx.font="bold 12px system-ui, Segoe UI, Roboto, sans-serif";
+    tctx.fillText(label,px-w/2+pad,py);
+  }
+}
+
 function drawTrucks(){
   tctx.clearRect(0,0,trucksCanvas.width,trucksCanvas.height);
   const now=performance.now();
+
   for(const T of trucks){
     if(now<T.startAt) continue;
+
     const a=T.latlon[T.seg], b=T.latlon[T.seg+T.dir]||a;
     const aP=map.project({lng:a[1],lat:a[0]}), bP=map.project({lng:b[1],lat:b[0]});
     const segLenPx=Math.max(1,Math.hypot(bP.x-aP.x,bP.y-aP.y));
-    let pxPerSec=SPEED_MULTIPLIER*T.speed*(0.9+(map.getZoom()-4)*0.12);
-    let step = (pxPerSec*(1/60))/segLenPx;
 
-    // Headway on same segment
+    let pxPerSec = SPEED_MULTIPLIER*T.speed*(0.9+(map.getZoom()-4)*0.12);
+    let step = (pxPerSec * __dt) / segLenPx; // time-delta based
+
+    // Headway throttle (same segment)
     const myProg=T.t*segLenPx; let minLead=Infinity;
     for(const O of trucks){
       if(O===T||now<O.startAt) continue;
@@ -279,21 +288,23 @@ function drawTrucks(){
         if(oProg>myProg) minLead=Math.min(minLead,oProg-myProg);
       }
     }
-    if(isFinite(minLead)&&minLead<MIN_GAP_PX) step*=Math.max(0.2,(minLead/MIN_GAP_PX)*0.6);
+    if(isFinite(minLead)&&minLead<MIN_GAP_PX) step*=Math.max(0.25,(minLead/MIN_GAP_PX)*0.7);
 
     // Crossing gap
     const {x:cx,y:cy}=truckScreenPos(T); let nearest=Infinity;
     for(const O of trucks){ if(O===T||now<O.startAt) continue; const p=truckScreenPos(O); const d=Math.hypot(p.x-cx,p.y-cy); if(d<nearest) nearest=d; }
-    if(isFinite(nearest)&&nearest<CROSS_GAP_PX) step*=Math.max(0.25,(nearest/CROSS_GAP_PX)*0.6);
+    if(isFinite(nearest)&&nearest<CROSS_GAP_PX) step*=Math.max(0.30,(nearest/CROSS_GAP_PX)*0.6);
 
     // Never freeze
     step = Math.max(step, MIN_STEP);
 
-    // Integrate
-    T.t+=step; 
-    if(T.t>=1){ T.seg+=T.dir; T.t-=1; if(T.seg<=0){T.seg=0;T.dir=1;} else if(T.seg>=T.latlon.length-1){T.seg=T.latlon.length-1;T.dir=-1;} }
+    // Integrate position
+    T.t+=step;
+    if(T.t>=1){ T.seg+=T.dir; T.t-=1;
+      if(T.seg<=0){T.seg=0;T.dir=1;} else if(T.seg>=T.latlon.length-1){T.seg=T.latlon.length-1;T.dir=-1;}
+    }
 
-    // Draw
+    // Draw oriented truck
     const theta=Math.atan2(bP.y-aP.y,bP.x-aP.x);
     const x=aP.x+(bP.x-aP.x)*T.t, y=aP.y+(bP.y-aP.y)*T.t;
     const nx=-(bP.y-aP.y), ny=(bP.x-aP.x); const nLen=Math.max(1,Math.hypot(nx,ny));
@@ -304,40 +315,6 @@ function drawTrucks(){
   }
 
   drawWarehousesAndRings();
-  map.triggerRepaint();
-}
-
-/* ---------- Warehouses + health rings + labels ---------- */
-function drawWarehousesAndRings(){
-  const z=map.getZoom();
-  for(const id of Object.keys(CITY)){
-    const c=CITY[id];
-    const p=map.project({lng:c.lon,lat:c.lat});
-    const S=warehouseSizeByZoom(z);
-
-    // ICON (sharp SVG)
-    const size = S;
-    if(WH_READY){
-      tctx.drawImage(WH_IMG, Math.round(p.x-size/2), Math.round(p.y-size/2), size, size);
-    } else {
-      // If still loading, draw a simple placeholder dot
-      tctx.fillStyle="#1de0ff";
-      tctx.beginPath(); tctx.arc(p.x, p.y, Math.max(8, S*0.2), 0, Math.PI*2); tctx.fill();
-    }
-
-    // status ring
-    const st = WAREHOUSE_STATE.get(id);
-    const target = 500; const pct = st ? Math.max(0, Math.min(1, st.inventory/target)) : 0.8;
-    drawStatusRing(tctx, p.x, p.y, S*0.65, pct);
-
-    // label
-    const label=c.name, pad=6, h=18, w=tctx.measureText(label).width+pad*2;
-    const px=p.x, py=p.y + (S/2) + 16;
-    tctx.fillStyle="rgba(10,10,11,0.82)"; tctx.strokeStyle="rgba(255,255,255,0.22)";
-    tctx.fillRect(px-w/2,py-h/2,w,h); tctx.strokeRect(px-w/2,py-h/2,w,h);
-    tctx.fillStyle="#e6e6e6"; tctx.textBaseline="middle"; tctx.font="bold 12px system-ui, Segoe UI, Roboto, sans-serif"; 
-    tctx.fillText(label,px-w/2+pad,py);
-  }
 }
 
 /* ---------- Tooltip hit-testing ---------- */
@@ -354,7 +331,6 @@ map.on("mousemove", (e)=>{
     if(d<=sp.r){ hit=sp; break; }
   }
   if(!hit){ tooltip.style.display="none"; return; }
-
   const st = WAREHOUSE_STATE.get(hit.id)||{inventory:"–", in:0, inDelayed:0, out:0};
   tipTitle.textContent = CITY[hit.id].name;
   tipInv.textContent = st.inventory;
@@ -365,16 +341,17 @@ map.on("mousemove", (e)=>{
   tooltip.style.display = "block";
 });
 
-/* ---------- Timeline scrubber ---------- */
+/* ---------- Timeline ---------- */
 function buildTimeline(items){
   tl.items = (Array.isArray(items) ? items.slice() : []);
   tl.totalMs = tl.items.reduce((acc,it)=>acc + (Number(it.delay_ms)||0), 0);
   tl.t0 = 0; tl.playing=false; tl.speed=1; tl.spokenIdx=-1; tl.progressMs=0;
-  tl.speedBtn.textContent = "1×";
-  tl.play.textContent = "▶︎ Play";
-  tl.barProg.style.width = "0%";
+  if(tl.speedBtn) tl.speedBtn.textContent = "1×";
+  if(tl.play) tl.play.textContent = "▶︎ Play";
+  if(tl.barProg) tl.barProg.style.width = "0%";
   tl.markers.forEach(m=>m.remove()); tl.markers.length=0;
 
+  if(!tl.barWrap) return;
   let t=0;
   tl.items.forEach((it)=>{
     const ms = Number(it.delay_ms)||0; t+=ms;
@@ -385,14 +362,14 @@ function buildTimeline(items){
   });
 }
 function tlNow(){ return (performance.now() - tl.t0) * tl.speed; }
-function tlPlay(){ if(tl.playing) return; tl.playing=true; tl.t0 = performance.now() - (tl.progressMs||0)/tl.speed; requestAnimationFrame(tlTick); tl.play.textContent="⏸ Pause"; }
-function tlPause(){ tl.playing=false; tl.progressMs = tlNow(); tl.play.textContent="▶︎ Play"; }
-function tlReset(){ tl.progressMs = 0; tl.spokenIdx=-1; tl.barProg.style.width="0%"; }
+function tlPlay(){ if(tl.playing) return; tl.playing=true; tl.t0 = performance.now() - (tl.progressMs||0)/tl.speed; requestAnimationFrame(tlTick); if(tl.play) tl.play.textContent="⏸ Pause"; }
+function tlPause(){ tl.playing=false; tl.progressMs = tlNow(); if(tl.play) tl.play.textContent="▶︎ Play"; }
+function tlReset(){ tl.progressMs = 0; tl.spokenIdx=-1; if(tl.barProg) tl.barProg.style.width="0%"; }
 function tlTick(){
   if(!tl.playing) return;
   const ms = Math.min(tlNow(), tl.totalMs || 0);
   tl.progressMs = ms;
-  tl.barProg.style.width = `${(ms/Math.max(1,tl.totalMs))*100}%`;
+  if(tl.barProg) tl.barProg.style.width = `${(ms/Math.max(1,tl.totalMs))*100}%`;
 
   let acc=0;
   for(let i=0;i<tl.items.length;i++){
@@ -405,18 +382,18 @@ function tlTick(){
   }
   if(ms >= tl.totalMs){ tlPause(); } else { requestAnimationFrame(tlTick); }
 }
-tl.play.addEventListener("click", ()=> tl.playing ? tlPause() : tlPlay());
-tl.speedBtn.addEventListener("click", ()=>{
+if(tl.play) tl.play.addEventListener("click", ()=> tl.playing ? tlPause() : tlPlay());
+if(tl.speedBtn) tl.speedBtn.addEventListener("click", ()=>{
   tl.speed = tl.speed===1 ? 1.5 : (tl.speed===1.5 ? 2 : 1);
   tl.speedBtn.textContent = `${tl.speed}×`;
   if(tl.playing){ tl.t0 = performance.now() - tl.progressMs/tl.speed; }
 });
-tl.barWrap.addEventListener("click", (ev)=>{
+if(tl.barWrap) tl.barWrap.addEventListener("click", (ev)=>{
   if(!tl.totalMs) return;
   const rect = tl.barWrap.getBoundingClientRect();
   const p = Math.min(1, Math.max(0, (ev.clientX-rect.left)/rect.width));
   tl.progressMs = p*tl.totalMs;
-  tl.barProg.style.width = `${p*100}%`;
+  if(tl.barProg) tl.barProg.style.width = `${p*100}%`;
   tl.spokenIdx = -1;
   if(!tl.playing) tlPlay();
 });
@@ -432,20 +409,17 @@ window.loadScenario = async function(file, humanLabel){
     const text = await res.text();
     const data = JSON.parse(text);
 
-    // Warehouses -> inventory & I/O counts
     WAREHOUSE_STATE.clear();
     for(const w of (data.warehouses||[])){
       WAREHOUSE_STATE.set(w.id, { inventory:Number(w.inventory)||0, in:0, inDelayed:0, out:0 });
     }
     scenarioTrucks = (data.trucks||[]).slice();
 
-    // Count inbound/outbound per WH
     for(const tr of scenarioTrucks){
       const o = WAREHOUSE_STATE.get(tr.origin); if(o) o.out++;
       const d = WAREHOUSE_STATE.get(tr.destination); if(d){ d.in++; if(String(tr.status).toLowerCase()==="delayed" || (tr.delay_hours||0)>0) d.inDelayed++; }
     }
 
-    // Reroutes
     const reroutes=new Map();
     if(Array.isArray(data.reroutes)){
       for(const r of data.reroutes){ if(r.truckId && Array.isArray(r.path)) reroutes.set(r.truckId, r.path.slice()); }
@@ -453,45 +427,46 @@ window.loadScenario = async function(file, humanLabel){
 
     for(const tr of scenarioTrucks) spawnTruck(tr, reroutes);
 
-    // Timeline (scrubber + narration)
     let tlItems = data?.commentary?.timeline;
     tlItems = Array.isArray(tlItems) ? tlItems : (typeof tlItems==="object" ? Object.values(tlItems) : []);
     buildTimeline(tlItems);
     tlReset();
-    const say = humanLabel || (/after/i.test(file) ? "After Correction" : "Before Disruption");
-    ttsEnq(say);
+    ttsEnq(humanLabel || (/after/i.test(file) ? "After Correction" : "Before Disruption"));
 
-    // Focus on warehouses (keeps first view sharp & centered)
-    fitToWarehouses();
-
+    fitToWarehouses();   // keep the map focused whenever a scenario loads
   }catch(err){
     console.error(err);
     ttsEnq(`Scenario load error: ${err.message}`);
   }
 };
 
-/* ---------- Fit map to all warehouses (focus fix) ---------- */
+/* ---------- Fit map to all warehouses (focus on open) ---------- */
 function fitToWarehouses(){
   const bounds = new maplibregl.LngLatBounds();
   Object.values(CITY).forEach(c => bounds.extend([c.lon, c.lat]));
-  // Pad for top label + bottom timeline + right control
-  map.fitBounds(bounds, {
-    padding: { top: 60, left: 60, right: 60, bottom: 160 },
-    duration: 900,
-    maxZoom: 6.8
-  });
+  map.fitBounds(bounds, { padding: { top: 60, left: 60, right: 60, bottom: 160 }, duration: 900, maxZoom: 6.8 });
 }
 
 /* ---------- Boot ---------- */
 map.on("load", ()=>{ 
-  resizeCanvas(); 
-  addVTroads(); 
-  loadScenario("scenario_before.json","Before Disruption"); 
-  // Ensure first paint focused even before scenario arrives
+  resizeCanvas();
+  addVTroads();
+  loadScenario("scenario_before.json","Before Disruption");
   fitToWarehouses();
 });
-map.on("render", drawTrucks);
-map.on("resize", resizeCanvas);
 
-// Hide text commentary panel by default
+// Hide the old commentary panel if present
 (() => { const p=document.getElementById("commentary"); if(p) p.style.display="none"; })();
+
+/* ---------- Independent animation loop (never stalls) ---------- */
+let __lastTS = performance.now();
+let __dt = 1 / 60; // seconds between frames (smoothed)
+function animLoop() {
+  const now = performance.now();
+  __dt = Math.min(0.05, (now - __lastTS) / 1000); // clamp to 50ms max
+  __lastTS = now;
+
+  drawTrucks();
+  requestAnimationFrame(animLoop);
+}
+requestAnimationFrame(animLoop);
