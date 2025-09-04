@@ -1,13 +1,13 @@
 /* ============================================================
-   Agentic Twin — Focused Load + Continuous Motion + Sharp WH
+   Agentic Twin — Focused Load + Continuous Motion + ISO WH
    ============================================================ */
 
 /* ---------- Map config ---------- */
 const STYLE_URL = "style.json";                    // MapLibre style
 const MAP_INIT   = { center:[78.9629,21.5937], zoom:5.0, minZoom:3, maxZoom:12 };
-const SHOW_TEXT_LOG = false;                       // hide text commentary (voice only)
+const SHOW_TEXT_LOG = false;                       // keep text commentary hidden
 
-/* ---------- DOM ---------- */
+/* ---------- DOM hooks (optional; guarded) ---------- */
 const logEl = document.getElementById("commentaryLog");
 const tooltip = document.getElementById("tooltip");
 const tipTitle = document.getElementById("tipTitle");
@@ -127,36 +127,26 @@ function addVTroads(){
   let phase=0; (function dashTick(){ phase=(phase+0.12)%3.0; try{ map.setPaintProperty("routes-motion","line-dasharray",[0.5+phase,2.5]); }catch(e){} requestAnimationFrame(dashTick); })();
 }
 
-/* ---------- Warehouse icon (SVG) ---------- */
-const WAREHOUSE_ICON_SRC = "assets/warehouse.svg"; // optional file you can provide
-const EMBEDDED_SVG = `
-<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'>
-  <defs>
-    <linearGradient id='g1' x1='0' y1='0' x2='0' y2='1'>
-      <stop offset='0' stop-color='#0f1720'/><stop offset='1' stop-color='#0a0f15'/>
-    </linearGradient>
-    <linearGradient id='g2' x1='0' y1='0' x2='0' y2='1'>
-      <stop offset='0' stop-color='#ffd44a'/><stop offset='1' stop-color='#e8b90e'/>
-    </linearGradient>
-  </defs>
-  <rect x='6' y='6' width='84' height='84' rx='18' fill='url(#g1)' stroke='#66e2ff' stroke-opacity='.5'/>
-  <rect x='18' y='30' width='60' height='34' rx='6' fill='url(#g2)' stroke='#41464d'/>
-  <rect x='18' y='58' width='60' height='10' fill='#213a2b'/>
-  <rect x='30' y='42' width='36' height='18' rx='3' fill='#6f7780'/>
-  <rect x='30' y='56' width='36' height='7' rx='2' fill='#3f464f'/>
-  <rect x='40' y='22' width='16' height='8' rx='2' fill='#cfd7df' stroke='#7b848f'/>
-  <rect x='28' y='22' width='16' height='8' rx='2' fill='#e3e9f1' stroke='#7b848f'/>
-  <rect x='52' y='22' width='16' height='8' rx='2' fill='#e3e9f1' stroke='#7b848f'/>
-</svg>`.trim();
+/* ---------- Warehouse icon: your isometric image in a rounded badge ---------- */
+const WAREHOUSE_ICON_SRC = "assets/warehouse_iso.png"; // << place your image here
+
+// helper: draw image “cover” (like CSS background-size: cover)
+function drawImageCover(ctx, img, dx, dy, dw, dh) {
+  const iw = img.naturalWidth || img.width || 0;
+  const ih = img.naturalHeight || img.height || 0;
+  if (!iw || !ih) return;
+  const r = Math.max(dw / iw, dh / ih);
+  const sw = Math.min(iw, dw / r);
+  const sh = Math.min(ih, dh / r);
+  const sx = (iw - sw) / 2;
+  const sy = (ih - sh) / 2;
+  ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+}
 
 let WH_IMG = new Image(); let WH_READY = false;
 function loadWarehouseIcon(){
   WH_IMG.onload = ()=>{ WH_READY = true; };
-  WH_IMG.onerror = ()=>{
-    WH_IMG = new Image();
-    WH_IMG.onload = ()=>{ WH_READY = true; };
-    WH_IMG.src = "data:image/svg+xml;utf8," + encodeURIComponent(EMBEDDED_SVG);
-  };
+  WH_IMG.onerror = ()=>{ WH_READY = false; };
   WH_IMG.src = WAREHOUSE_ICON_SRC;
 }
 loadWarehouseIcon();
@@ -192,7 +182,7 @@ function drawStatusRing(ctx, x, y, S, pct){
 }
 
 /* ---------- Trucks (continuous motion) ---------- */
-const SPEED_MULTIPLIER = 9.5;   // feel free to tweak
+const SPEED_MULTIPLIER = 9.5;   // overall speed multiplier
 const MIN_GAP_PX = 50;
 const CROSS_GAP_PX = 34;
 const LANES_PER_ROUTE = 3;
@@ -230,30 +220,60 @@ function drawVectorTruck(ctx,w,h,delayed){
   cabGrad.addColorStop(0,"#b3bcc6"); cabGrad.addColorStop(1,"#9aa5b2");
   ctx.fillStyle=cabGrad; ctx.strokeStyle="#5f6771"; ctx.beginPath(); ctx.roundRect(-w/2,-cabH/2,cabW,cabH,3); ctx.fill(); ctx.stroke();
   ctx.fillStyle="#26303a"; ctx.fillRect(-w/2+2,-cabH*0.44,cabW-4,cabH*0.32);
-  ctx.fillStyle="#1b1f24"; ctx.strokeStyle="#444a52"; ctx.lineWidth=1; const wy=trH*0.5-2;
-  [-1,1].forEach(side=>{ ctx.beginPath(); ctx.roundRect(-trW*0.35, side*wy-2.5, trW*0.28,5,2); ctx.fill(); ctx.stroke();
-                          ctx.beginPath(); ctx.roundRect( trW*0.06, side*wy-2.5, trW*0.28,5,2); ctx.fill(); ctx.stroke(); });
   ctx.fillStyle=delayed?"#ff3b30":"#00c853"; ctx.beginPath(); ctx.arc(trW*0.32,-trH*0.28,3.2,0,Math.PI*2); ctx.fill();
 }
 
 function drawWarehousesAndRings(){
   const z=map.getZoom();
+
   for(const id of Object.keys(CITY)){
     const c=CITY[id];
     const p=map.project({lng:c.lon,lat:c.lat});
-    const S=warehouseSizeByZoom(z);
 
-    if(WH_READY){
-      tctx.drawImage(WH_IMG, Math.round(p.x-S/2), Math.round(p.y-S/2), S, S);
-    } else {
-      tctx.fillStyle="#1de0ff";
-      tctx.beginPath(); tctx.arc(p.x, p.y, Math.max(8, S*0.2), 0, Math.PI*2); tctx.fill();
+    // scale with zoom
+    const S = Math.max(56, Math.min(150, 96 * (0.9 + (z - 5) * 0.28)));
+    const panel = { x: p.x - S/2, y: p.y - S/2, w: S, h: S, r: S * 0.22 };
+
+    // backdrop panel (rounded rect) + inner clip so your image sits cleanly
+    tctx.save();
+
+    // panel fill & rim
+    const grd = tctx.createLinearGradient(0, panel.y, 0, panel.y + panel.h);
+    grd.addColorStop(0, "#0f1720");
+    grd.addColorStop(1, "#0b1016");
+    tctx.fillStyle = grd;
+    tctx.strokeStyle = "rgba(102,226,255,0.55)";
+    tctx.lineWidth = Math.max(2, S * 0.035);
+
+    // rounded rect path
+    const rr = panel.r;
+    tctx.beginPath();
+    tctx.moveTo(panel.x + rr, panel.y);
+    tctx.arcTo(panel.x + panel.w, panel.y, panel.x + panel.w, panel.y + rr, rr);
+    tctx.arcTo(panel.x + panel.w, panel.y + panel.h, panel.x + panel.w - rr, panel.y + panel.h, rr);
+    tctx.arcTo(panel.x, panel.y + panel.h, panel.x, panel.y + panel.h - rr, rr);
+    tctx.arcTo(panel.x, panel.y, panel.x + rr, panel.y, rr);
+    tctx.closePath();
+
+    tctx.fill();
+    tctx.stroke();
+
+    // clip to panel and draw your isometric image "cover"
+    tctx.save();
+    tctx.clip();
+    if (WH_READY) {
+      drawImageCover(tctx, WH_IMG, panel.x, panel.y, panel.w, panel.h);
     }
+    tctx.restore();
+    tctx.restore();
 
+    // status ring around the badge (inventory health)
     const st = WAREHOUSE_STATE.get(id);
-    const target = 500; const pct = st ? Math.max(0, Math.min(1, st.inventory/target)) : 0.8;
-    drawStatusRing(tctx, p.x, p.y, S*0.65, pct);
+    const target = 500;
+    const pct = st ? Math.max(0, Math.min(1, st.inventory/target)) : 0.8;
+    drawStatusRing(tctx, p.x, p.y, S * 0.65, pct);
 
+    // label
     const label=c.name, pad=6, h=18, w=tctx.measureText(label).width+pad*2;
     const px=p.x, py=p.y + (S/2) + 16;
     tctx.fillStyle="rgba(10,10,11,0.82)"; tctx.strokeStyle="rgba(255,255,255,0.22)";
@@ -317,12 +337,13 @@ function drawTrucks(){
   drawWarehousesAndRings();
 }
 
-/* ---------- Tooltip hit-testing ---------- */
+/* ---------- Tooltip hit-testing (optional) ---------- */
 function screenPos(id){
   const c=CITY[id]; const p=map.project({lng:c.lon,lat:c.lat}); const S=warehouseSizeByZoom(map.getZoom());
   return { x:p.x, y:p.y, r:S*0.60, id };
 }
 map.on("mousemove", (e)=>{
+  if(!tooltip) return;
   const {point} = e;
   let hit=null;
   for(const id of Object.keys(CITY)){
@@ -341,7 +362,7 @@ map.on("mousemove", (e)=>{
   tooltip.style.display = "block";
 });
 
-/* ---------- Timeline ---------- */
+/* ---------- Timeline (optional UI) ---------- */
 function buildTimeline(items){
   tl.items = (Array.isArray(items) ? items.slice() : []);
   tl.totalMs = tl.items.reduce((acc,it)=>acc + (Number(it.delay_ms)||0), 0);
@@ -433,7 +454,7 @@ window.loadScenario = async function(file, humanLabel){
     tlReset();
     ttsEnq(humanLabel || (/after/i.test(file) ? "After Correction" : "Before Disruption"));
 
-    fitToWarehouses();   // keep the map focused whenever a scenario loads
+    fitToWarehouses();   // focus on all WHs each load
   }catch(err){
     console.error(err);
     ttsEnq(`Scenario load error: ${err.message}`);
@@ -455,7 +476,7 @@ map.on("load", ()=>{
   fitToWarehouses();
 });
 
-// Hide the old commentary panel if present
+// Hide any old commentary panel if present
 (() => { const p=document.getElementById("commentary"); if(p) p.style.display="none"; })();
 
 /* ---------- Independent animation loop (never stalls) ---------- */
