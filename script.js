@@ -1,10 +1,10 @@
 /* =========================================================================
-   Agentic Twin — Disrupt → Correct → Normal (Click-Driven v2)
-   - White base routes; only active corridor is red; fix is green
-   - One disruption per Disrupt click; narration ends by asking to click Correct
-   - Correct: "AI has corrected the disruption", show green reroute, resume trucks
-   - Normal: clear highlights, unpause, restore baseline
-   - Predictive stats use ACTUAL paused-truck count for impact
+   Agentic Twin — Disrupt → Correct → Normal (Click-Driven v3)
+   Fixes:
+   1) Disruption-2 (Delhi → Hyderabad) correction goes via Mumbai (green).
+   2) Detour (green) always on top; overlap on Mumbai–Hyderabad solved.
+   3) Dashboard uses REAL JSON values (before/after); title set in HTML.
+   4) Narration plays TWICE (both Disrupt and Correct flows).
    ======================================================================= */
 
 /* -------------------- tiny debug pill -------------------- */
@@ -55,7 +55,12 @@ function getRoadLatLon(a,b){
   return [[CITY[a].lat,CITY[a].lon],[CITY[b].lat,CITY[b].lon]];
 }
 function expandIDsToLatLon(ids){
-  const out=[]; for(let i=0;i<ids.length-1;i++){ const seg=getRoadLatLon(ids[i],ids[i+1]); if(i>0) seg.shift(); out.push(...seg); }
+  const out=[];
+  for(let i=0;i<ids.length-1;i++){
+    const seg=getRoadLatLon(ids[i],ids[i+1]);
+    if(i>0) seg.shift();
+    out.push(...seg);
+  }
   return out;
 }
 function networkGeoJSON(){
@@ -64,24 +69,21 @@ function networkGeoJSON(){
   }))};
 }
 
-/* -------------------- default scenario -------------------- */
+/* -------------------- scenario storage -------------------- */
+let SCN_BEFORE=null, SCN_AFTER=null;
+
+/* -------------------- default scenario (fallback) -------------------- */
 const DEFAULT_BEFORE={
   warehouses:Object.keys(CITY).map(id=>({id,location:CITY[id].name.split("—")[1].trim(),inventory:500})),
   trucks:[
     {id:"T1", origin:"WH1", destination:"WH2", status:"On-Time", delay_hours:0},
     {id:"T2", origin:"WH2", destination:"WH3", status:"On-Time", delay_hours:0},
     {id:"T3", origin:"WH3", destination:"WH1", status:"On-Time", delay_hours:0},
-    {id:"T4", origin:"WH4", destination:"WH1", status:"Delayed", delay_hours:5},
-    {id:"T5", origin:"WH4", destination:"WH2", status:"On-Time", delay_hours:0},
-    {id:"T6", origin:"WH4", destination:"WH3", status:"On-Time", delay_hours:0},
-    {id:"T7", origin:"WH4", destination:"WH5", status:"On-Time", delay_hours:0},
-    {id:"T8", origin:"WH5", destination:"WH1", status:"On-Time", delay_hours:0},
-    {id:"T9", origin:"WH5", destination:"WH2", status:"On-Time", delay_hours:0},
-    {id:"T10",origin:"WH5", destination:"WH3", status:"On-Time", delay_hours:0},
   ]
 };
 
 /* -------------------- 5 clean disruption steps w/ logical reroutes ---------- */
+/* NOTE: Step D2 is explicitly Delhi→Hyderabad disrupted; fix goes VIA Mumbai (your ask #1). */
 const STEPS=[
   { // D1: Delhi–Mumbai reroute via Hyderabad
     id:"D1",
@@ -99,19 +101,19 @@ const STEPS=[
       "Green links show the new safe detour. Flows are resuming."
     ]
   },
-  { // D2: Hyderabad–Delhi reroute via Mumbai→Bangalore→Delhi
+  { // D2: Delhi–Hyderabad reroute via Mumbai  ✅ fix for your point (1)
     id:"D2",
-    route:["WH4","WH1"],
-    reroute:[["WH4","WH2"],["WH2","WH3"],["WH3","WH1"]],
+    route:["WH1","WH4"],                      // Delhi → Hyderabad disrupted
+    reroute:[["WH1","WH2"],["WH2","WH4"]],    // Delhi → Mumbai → Hyderabad (green on correction)
     cause:[
       "Disruption two.",
-      "Hyderabad to Delhi is impacted by a long work zone.",
+      "Delhi to Hyderabad is impacted by a long work zone.",
       "All trucks on this corridor are paused in place.",
-      "Click Correct to rebalance via Mumbai and Bangalore."
+      "Click Correct to rebalance via Mumbai."
     ],
     fix:[
       "AI has corrected the disruption.",
-      "We are diverting Hyderabad to Mumbai, Mumbai to Bangalore, and Bangalore to Delhi.",
+      "We are diverting Delhi to Mumbai, and then Mumbai to Hyderabad.",
       "Green segments confirm the balanced detour is active."
     ]
   },
@@ -212,19 +214,26 @@ function ensureRoadLayers(){
       paint:{"line-color":"#ffffff","line-opacity":0.9,"line-width":3.0},
       layout:{"line-cap":"round","line-join":"round"}});
   }
+
   if(!map.getSource("alert")) map.addSource("alert",{type:"geojson",data:{type:"FeatureCollection",features:[]}});
   if(!map.getLayer("alert-red")){
     map.addLayer({id:"alert-red",type:"line",source:"alert",
       paint:{"line-color":"#ff6b6b","line-opacity":0.98,"line-width":4.6},
       layout:{"line-cap":"round","line-join":"round"}});
   }
+
   if(!map.getSource("fix")) map.addSource("fix",{type:"geojson",data:{type:"FeatureCollection",features:[]}});
   if(!map.getLayer("fix-green")){
     map.addLayer({id:"fix-green",type:"line",source:"fix",
-      paint:{"line-color":"#00d08a","line-opacity":0.98,"line-width":5.0},
+      paint:{"line-color":"#00d08a","line-opacity":0.98,"line-width":5.8},
       layout:{"line-cap":"round","line-join":"round"}});
   }
+
+  /* Ensure green detour is on TOP of everything relevant (your ask #2). */
+  try { map.moveLayer("fix-green"); } catch(e) {}
 }
+
+/* helpers for sources */
 function featureForRoute(ids){
   return {type:"Feature",properties:{id:ids.join("-")},
     geometry:{type:"LineString",coordinates:toLonLat(expandIDsToLatLon(ids))}};
@@ -354,7 +363,7 @@ function drawFrame(){
   drawWarehouses();
 }
 
-/* -------------------- narration -------------------- */
+/* -------------------- narration (play twice) -------------------- */
 const synth=window.speechSynthesis; let VOICE=null;
 function pickVoice(){
   const vs=synth?.getVoices?.()||[];
@@ -365,19 +374,36 @@ function pickVoice(){
 VOICE=pickVoice(); if(!VOICE&&synth) synth.onvoiceschanged=()=>{VOICE=pickVoice();};
 let ttsTimers=[]; function clearTTS(){ ttsTimers.forEach(clearTimeout); ttsTimers=[]; try{synth?.cancel?.();}catch(e){} }
 function speakOnce(text,rate=0.9){ if(!synth||!text) return; const u=new SpeechSynthesisUtterance(String(text)); if(VOICE) u.voice=VOICE; u.rate=rate; u.pitch=1.0; u.volume=1; synth.speak(u); }
+function measureQueueDuration(lines,rate=0.9,gap=950){ let t=0; lines.forEach(line=>{ const d=Math.max(1700,48*line.length); t+=d+gap; }); return t; }
 function speakQueue(lines,gap=950,rate=0.9){ clearTTS(); let t=0; lines.forEach(line=>{ const d=Math.max(1700,48*line.length); ttsTimers.push(setTimeout(()=>speakOnce(line,rate),t)); t+=d+gap; }); }
+function speakQueueTwice(lines,gap=950,rate=0.9){
+  clearTTS();
+  const dur=measureQueueDuration(lines,rate,gap);
+  speakQueue(lines,gap,rate);
+  ttsTimers.push(setTimeout(()=>speakQueue(lines,gap,rate), dur+600)); // replay once after slight gap
+}
 
-/* -------------------- scenario + predictive stats -------------------- */
+/* -------------------- scenario + REAL stats -------------------- */
 async function fetchOrDefault(file, fallback){
   try{ const r=await fetch(`${file}?v=${Date.now()}`,{cache:"no-store"}); if(!r.ok) throw new Error(`HTTP ${r.status}`); return await r.json(); }
   catch(e){ debug(`Using default scenario (${e.message})`); return fallback; }
 }
-const baseStats={};
-function computeBaseline(data){
-  const inC={}, outC={}; (data.trucks||[]).forEach(t=>{ outC[t.origin]=(outC[t.origin]||0)+1; inC[t.destination]=(inC[t.destination]||0)+1; });
-  (data.warehouses||[]).forEach(w=>{ baseStats[w.id]={ inv:w.inventory??500, in:inC[w.id]||0, out:outC[w.id]||0 }; });
+
+const baseStats={};     // BEFORE snapshot (Σ) — from scenario_before.json
+let beforeStats=null;   // computed from BEFORE JSON (Σ)
+let afterStats=null;    // computed from AFTER JSON  (Σ)
+
+function computeStatsFromScenario(scn){
+  const inC={}, outC={};
+  (scn.trucks||[]).forEach(t=>{ outC[t.origin]=(outC[t.origin]||0)+1; inC[t.destination]=(inC[t.destination]||0)+1; });
+  const stats={};
+  (scn.warehouses||[]).forEach(w=>{
+    stats[w.id]={ inv:w.inventory??0, in:inC[w.id]||0, out:outC[w.id]||0 };
+  });
+  return stats;
 }
-function renderStats(pred){
+
+function renderStatsTable(pred){
   const tbody=document.querySelector("#statsTable tbody"); if(!tbody) return; tbody.innerHTML="";
   for(const id of Object.keys(CITY)){
     const s=pred[id]||{inv:"-",in:0,out:0};
@@ -386,32 +412,36 @@ function renderStats(pred){
     tbody.appendChild(tr);
   }
 }
-function copyStats(src){ const out={}; for(const k of Object.keys(src)) out[k]={...src[k]}; return out; }
-function applyPredictive(step, mode, pausedCount){
-  const delta = Math.max(1, pausedCount||1); // real impact = number of paused trucks
-  const pred=copyStats(baseStats);
 
-  if(mode==="disrupt"){
-    const [A,B]=step.route;
-    pred[A].out = Math.max(0, pred[A].out - delta);
-    pred[B].in  = Math.max(0, pred[B].in  - delta);
-    pred[A].inv += delta;
-    pred[B].inv -= delta;
-  } else if(mode==="correct"){
-    const pairs=step.reroute||[]; if(pairs.length){
-      const A=pairs[0][0], Z=pairs[pairs.length-1][1];
-      pred[A].out += delta; pred[Z].in += delta;
-      for(const [u,v] of pairs){
-        if(u!==A){ pred[u].in  += delta; }
-        if(v!==Z){ pred[v].out += delta; }
-      }
+function copyStats(src){ const out={}; for(const k of Object.keys(src)) out[k]={...src[k]}; return out; }
+
+/* Projection during Disrupt: use BEFORE JSON delayed trucks (real) */
+function deltaFromDelayedTrucks(scnBefore){
+  const dByWh={}; Object.keys(CITY).forEach(id=>dByWh[id]=0);
+  for(const t of (scnBefore.trucks||[])){
+    const isDelayed=(t.status||"").toLowerCase()==="delayed" || (t.delay_hours||0)>0;
+    if(isDelayed) dByWh[t.origin]-=1; // one departure paused at origin
+  }
+  return dByWh; // counts (not units). We'll reflect counts in in/out; inv stays Σ from BEFORE unless you want live inv ticks.
+}
+
+/* Apply Δ counts to a stats snapshot for visualization */
+function applyDeltaToStats(base, deltaCounts, invShiftPerTruck=10){
+  const out=copyStats(base);
+  for(const wh of Object.keys(deltaCounts)){
+    const d=deltaCounts[wh];
+    if(d<0){ // paused departures: less out, more inventory retained
+      out[wh].out=Math.max(0,(out[wh].out||0)+d);           // reduce out count
+      out[wh].inv=(out[wh].inv||0)+(-d)*invShiftPerTruck;   // keep units at origin
+    } else if(d>0){
+      out[wh].out=(out[wh].out||0)+d;
+      out[wh].inv=Math.max(0,(out[wh].inv||0)-d*invShiftPerTruck);
     }
   }
-  return pred;
+  return out;
 }
 
 /* -------------------- pause / reroute control -------------------- */
-function defaultPathIDs(o,d){ const k1=keyFor(o,d), k2=keyFor(d,o); if(RP[k1]||RP[k2]) return [o,d]; return (o!=="WH4"&&d!=="WH4")?[o,"WH4",d]:[o,d]; }
 function odMatch(ids,o,d){ const a=ids[0], b=ids[ids.length-1]; return (a===o&&b===d)||(a===d&&b===o); }
 function setTruckPath(T,latlon,toMid=false){ if(!latlon||latlon.length<2) return; T.latlon=latlon; T.seg=0; T.dir=1; T.t=toMid?0.5:0.0; }
 
@@ -458,7 +488,8 @@ function setFix(pairs){ setSourceFeatures("fix",(pairs||[]).map(pair=>featureFor
 function clearFix(){ setSourceFeatures("fix",[]); }
 
 function startDisrupt(){
-  if(mode==="disrupt"){ speakQueue(["A disruption is already active. Please click the Correct button to proceed."],900,0.92); return; }
+  if(mode==="disrupt"){ speakQueueTwice(["A disruption is already active. Please click the Correct button to proceed."],900,0.92); return; }
+
   // advance to next step
   currentStepIdx = (currentStepIdx + 1) % STEPS.length;
   const step=STEPS[currentStepIdx];
@@ -466,44 +497,48 @@ function startDisrupt(){
   clearFix(); setAlert(step.route);
   const pausedCount=pauseAllOnRoute(step);
 
-  // predictive stats for disruption
-  const pred=applyPredictive(step,"disrupt",pausedCount);
-  renderStats(pred);
+  /* Predictive stats for disruption — REAL projection from BEFORE JSON delays */
+  const deltaCounts=deltaFromDelayedTrucks(SCN_BEFORE||{trucks:[]});
+  const pred=applyDeltaToStats(beforeStats, deltaCounts, 10);
+  renderStatsTable(pred);
 
   // zoom to corridor for clarity
   fitToRoute(step.route);
 
-  // narration
-  speakQueue([
+  // narration (twice)
+  speakQueueTwice([
     ...step.cause,
     "Once you are ready, please click the Correct button."
   ], 950, 0.9);
 
   mode="disrupt";
 }
+
 function applyCorrect(){
-  if(mode!=="disrupt"){ speakQueue(["No active disruption. Click Disrupt first."],800,0.95); return; }
+  if(mode!=="disrupt"){ speakQueueTwice(["No active disruption. Click Disrupt first."],800,0.95); return; }
   const step=STEPS[currentStepIdx];
 
-  clearAlert(); setFix(step.reroute);
+  clearAlert();
+  setFix(step.reroute);            // draw detour (green) — always on top
   const released=reroutePaused(step);
 
-  // predictive stats for correction
-  const pred=applyPredictive(step,"correct",released);
-  renderStats(pred);
+  /* On correction, show AFTER snapshot EXACTLY as per JSON (your ask #3) */
+  renderStatsTable(afterStats);
 
   // zoom to reroute path
   fitToRoute(step.reroute.flat());
 
-  speakQueue(step.fix, 950, 0.92);
+  // narration (twice)
+  speakQueueTwice(step.fix, 950, 0.92);
   mode="fixed";
 }
+
 function backToNormal(){
   clearTTS();
   clearAlert(); clearFix();
   unpauseAll(true); // restore original paths
-  renderStats(baseStats);
-  speakQueue(["Returning to normal operations. All corridors white and flowing."], 900, 0.95);
+  renderStatsTable(beforeStats);   // show BEFORE JSON numbers
+  speakQueueTwice(["Returning to normal operations. All corridors white and flowing."], 900, 0.95);
   mode="normal";
 }
 
@@ -543,18 +578,26 @@ const mapReady=new Promise(res=>map.on("load",res));
   if(btnAfter)  btnAfter.onclick =()=>applyCorrect();
   btnNormal.onclick=()=>backToNormal();
 
-  // scenario & trucks
-  const data=await fetchOrDefault("scenario_before.json", DEFAULT_BEFORE);
-  computeBaseline(data); renderStats(baseStats);
+  // load REAL scenarios
+  SCN_BEFORE = await fetchOrDefault("scenario_before.json", DEFAULT_BEFORE);
+  SCN_AFTER  = await fetchOrDefault("scenario_after.json",  DEFAULT_BEFORE); // fallback ok
 
+  // compute REAL stats snapshots
+  beforeStats = computeStatsFromScenario(SCN_BEFORE);
+  afterStats  = computeStatsFromScenario(SCN_AFTER);
+  Object.assign(baseStats, beforeStats); // keep for legacy uses
+
+  // spawn trucks from BEFORE scenario
   trucks.length=0; truckNumberById.clear();
-  (data.trucks||[]).forEach((t,i)=>spawnTruck(t,i));
+  (SCN_BEFORE.trucks||[]).forEach((t,i)=>spawnTruck(t,i));
 
   // initial camera
   const b=new maplibregl.LngLatBounds(); Object.values(CITY).forEach(c=>b.extend([c.lon,c.lat]));
   map.fitBounds(b,{padding:{top:60,left:60,right:320,bottom:60},duration:800,maxZoom:6.8});
 
-  backToNormal(); // start clean
+  // start clean — show BEFORE stats (REAL JSON)
+  renderStatsTable(beforeStats);
+  backToNormal(); // also speaks "Returning to normal..." twice
 })();
 
 function tick(){ const now=performance.now(); const dt=Math.min(0.05,(now-__lastTS)/1000); __lastTS=now; __dt=dt; drawFrame(); requestAnimationFrame(tick); }
