@@ -1,32 +1,29 @@
 /* =========================================================================
-   Agentic Twin (resilient)
-   - Auto-creates overlay canvas if missing (prevents “everything vanished”)
-   - Corridors always present; reroutes overlay on top
-   - Continuous narration (queued)
-   - Guards for older Canvas APIs
+   Agentic Twin • Resilient build for GitHub Pages
+   - Auto-creates overlay canvas
+   - Falls back to DEFAULT scenarios if fetch fails
+   - Corridors always present (red), reroutes overlay (green)
+   - Continuous narration (queued), continuous trucks
+   - On-screen debug text for last error
    ======================================================================= */
 
-/* ----- Polyfills / guards ----- */
-if (!CanvasRenderingContext2D.prototype.roundRect) {
-  CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) {
-    this.beginPath();
-    this.moveTo(x + r, y);
-    this.lineTo(x + w - r, y);
-    this.quadraticCurveTo(x + w, y, x + w, y + r);
-    this.lineTo(x + w, y + h - r);
-    this.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-    this.lineTo(x + r, y + h);
-    this.quadraticCurveTo(x, y + h, x, y + h - r);
-    this.lineTo(x, y + r);
-    this.quadraticCurveTo(x, y, x + r, y);
-    this.closePath();
-  };
+/* ——— debug strip (shows last error, bottom-left) ——— */
+let __DEBUG_EL = null;
+function debugSet(msg) {
+  if (!__DEBUG_EL) {
+    __DEBUG_EL = document.createElement("div");
+    __DEBUG_EL.style.cssText =
+      "position:fixed;left:8px;bottom:8px;z-index:9999;background:rgba(0,0,0,0.55);color:#f0f3f7;font:12px/1.3 system-ui,Segoe UI,Roboto,sans-serif;padding:6px 8px;border-radius:6px;pointer-events:none";
+    document.body.appendChild(__DEBUG_EL);
+  }
+  __DEBUG_EL.textContent = msg || "";
 }
+window.addEventListener("error", (e) => debugSet(`Error: ${e.message || e}`));
 
 /* ---------- Map config ---------- */
-const STYLE_URL = "style.json";
+const STYLE_URL = "style.json"; // keep your current style.json
 const MAP_INIT = { center: [78.9629, 21.5937], zoom: 5.4, minZoom: 3, maxZoom: 12 };
-const WAREHOUSE_ICON_SRC = "warehouse_iso.png"; // root-level PNG
+const WAREHOUSE_ICON_SRC = "warehouse_iso.png"; // must be at repo root
 
 /* ---------- Warehouses ---------- */
 const CITY = {
@@ -51,33 +48,65 @@ const RP = {
   "WH5-WH3": [[22.5726,88.3639],[21.15,85.8],[19.5,85.8],[17.9,82.7],[16.5,80.3],[13.3409,77.1010],[12.9716,77.5946]],
 };
 const keyFor = (a,b)=>`${a}-${b}`;
+const toLonLat = pts => pts.map(p=>[p[1],p[0]]);
 function getRoadLatLon(a,b){ const k1=keyFor(a,b),k2=keyFor(b,a); if(RP[k1])return RP[k1]; if(RP[k2])return [...RP[k2]].reverse(); return [[CITY[a].lat,CITY[a].lon],[CITY[b].lat,CITY[b].lon]]; }
 function expandIDsToLatLon(ids){ const out=[]; for(let i=0;i<ids.length-1;i++){ const seg=getRoadLatLon(ids[i],ids[i+1]); if(i>0) seg.shift(); out.push(...seg);} return out; }
-const toLonLat = pts => pts.map(p=>[p[1],p[0]]);
 function networkGeoJSON(){
-  return { type:"FeatureCollection", features:Object.keys(RP).map(k=>({type:"Feature",properties:{id:k},geometry:{type:"LineString",coordinates:toLonLat(RP[k])}})) };
+  return { type:"FeatureCollection", features:Object.keys(RP).map(k=>({ type:"Feature", properties:{id:k}, geometry:{ type:"LineString", coordinates: toLonLat(RP[k]) } })) };
 }
+
+/* ---------- DEFAULT scenarios (used if fetch fails) ---------- */
+const DEFAULT_BEFORE = {
+  warehouses: Object.keys(CITY).map(id => ({id, location: CITY[id].name.split("—")[1].trim(), inventory: 500})),
+  trucks: [
+    {id:"T1", origin:"WH1", destination:"WH2", status:"On-Time", delay_hours:0},
+    {id:"T2", origin:"WH2", destination:"WH3", status:"On-Time", delay_hours:0},
+    {id:"T3", origin:"WH3", destination:"WH1", status:"On-Time", delay_hours:0},
+    {id:"T4", origin:"WH4", destination:"WH1", status:"Delayed", delay_hours:5},
+    {id:"T5", origin:"WH4", destination:"WH2", status:"On-Time", delay_hours:0},
+    {id:"T6", origin:"WH4", destination:"WH3", status:"On-Time", delay_hours:0},
+    {id:"T7", origin:"WH4", destination:"WH5", status:"On-Time", delay_hours:0},
+    {id:"T8", origin:"WH5", destination:"WH1", status:"On-Time", delay_hours:0},
+    {id:"T9", origin:"WH5", destination:"WH2", status:"On-Time", delay_hours:0},
+    {id:"T10",origin:"WH5", destination:"WH3", status:"On-Time", delay_hours:0},
+    {id:"T11",origin:"WH2", destination:"WH5", status:"On-Time", delay_hours:0},
+    {id:"T12",origin:"WH3", destination:"WH5", status:"On-Time", delay_hours:0},
+    {id:"T13",origin:"WH1", destination:"WH4", status:"On-Time", delay_hours:0},
+    {id:"T14",origin:"WH2", destination:"WH4", status:"On-Time", delay_hours:0},
+    {id:"T15",origin:"WH3", destination:"WH4", status:"On-Time", delay_hours:0},
+  ],
+  reroutes: []
+};
+const DEFAULT_AFTER = {
+  ...DEFAULT_BEFORE,
+  reroutes: [
+    {truckId:"T4", path:["WH4","WH5","WH1"]},
+    {truckId:"T11",path:["WH2","WH4","WH5"]},
+    {truckId:"T9", path:["WH5","WH4","WH2"]},
+  ],
+  trucks: DEFAULT_BEFORE.trucks.map(t => t.id==="T4" ? {...t, status:"Rerouted"} : t)
+};
 
 /* ---------- Map ---------- */
 const map = new maplibregl.Map({
-  container:"map", style:STYLE_URL,
-  center:MAP_INIT.center, zoom:MAP_INIT.zoom, minZoom:MAP_INIT.minZoom, maxZoom:MAP_INIT.maxZoom,
-  attributionControl:true
+  container: "map",
+  style: STYLE_URL,
+  center: MAP_INIT.center,
+  zoom: MAP_INIT.zoom,
+  minZoom: MAP_INIT.minZoom,
+  maxZoom: MAP_INIT.maxZoom,
+  attributionControl: true
 });
-map.addControl(new maplibregl.NavigationControl({visualizePitch:false}),"top-left");
+map.addControl(new maplibregl.NavigationControl({visualizePitch:false}), "top-left");
 
-/* ---------- Overlay canvas (auto-create if missing) ---------- */
+/* ---------- Overlay canvas (auto-create) ---------- */
 let trucksCanvas = null, tctx = null;
 function ensureOverlayCanvas(){
   let el = document.getElementById("trucksCanvas");
   if(!el){
     el = document.createElement("canvas");
     el.id = "trucksCanvas";
-    el.style.position = "absolute";
-    el.style.top = "0"; el.style.left = "0";
-    el.style.width = "100%"; el.style.height = "100%";
-    el.style.pointerEvents = "none";
-    el.style.zIndex = "2";
+    el.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2;";
     map.getContainer().appendChild(el);
   }
   trucksCanvas = el;
@@ -92,7 +121,7 @@ function resizeCanvas(){
   trucksCanvas.height = base.clientHeight * dpr;
   trucksCanvas.style.width  = base.clientWidth  + "px";
   trucksCanvas.style.height = base.clientHeight + "px";
-  if (tctx) tctx.setTransform(dpr,0,0,dpr,0,0);
+  tctx.setTransform(dpr,0,0,dpr,0,0);
 }
 window.addEventListener("resize", resizeCanvas);
 
@@ -109,8 +138,8 @@ VOICE = pickVoice();
 if(!VOICE && synth) synth.onvoiceschanged = ()=>{ VOICE = pickVoice(); };
 
 let ttsTimers=[]; 
-function clearTTS(){ ttsTimers.forEach(clearTimeout); ttsTimers=[]; try{ synth?.cancel?.(); }catch(e){} }
-function speakOnce(text){ if(!synth||!text) return; const u=new SpeechSynthesisUtterance(String(text)); if(VOICE) u.voice=VOICE; u.rate=1.02; u.pitch=1.02; synth.speak(u); }
+function clearTTS(){ ttsTimers.forEach(clearTimeout); ttsTimers=[]; try{synth?.cancel?.();}catch(e){} }
+function speakOnce(text){ if(!synth||!text) return; const u=new SpeechSynthesisUtterance(String(text)); if(VOICE) u.voice=VOICE; u.rate=1.02; u.pitch=1.02; u.volume=1; synth.speak(u); }
 function speakQueue(lines,gap=350){ clearTTS(); let t=0; lines.forEach(line=>{ const dur=Math.max(1400,44*line.length); ttsTimers.push(setTimeout(()=>speakOnce(line),t)); t+=dur+gap; }); }
 
 /* ---------- Roads (robust) ---------- */
@@ -139,7 +168,7 @@ function ensureRoadLayers(rerouteFC){
     }
   });
 
-  if(!map.getLayer("reroutes-dash")) {
+  if(!map.getLayer("reroutes-dash")){
     map.addLayer({
       id:"reroutes-dash", type:"line", source:"reroutes",
       paint:{
@@ -148,20 +177,19 @@ function ensureRoadLayers(rerouteFC){
         "line-dasharray":[0.4,2.2]
       }
     });
-    let phase=0; (function dash(){ phase=(phase+0.12)%3.0; try{ map.setPaintProperty("reroutes-dash","line-dasharray",[0.4+phase,2.2]); }catch(e){} requestAnimationFrame(dash); })();
+    let phase=0; (function dash(){ phase=(phase+0.12)%3.0; try{map.setPaintProperty("reroutes-dash","line-dasharray",[0.4+phase,2.2]);}catch(e){} requestAnimationFrame(dash); })();
   }
 }
 
-/* ---------- Warehouses drawing ---------- */
+/* ---------- Warehouse icons ---------- */
 const WH_IMG = new Image();
 let WH_READY=false;
 WH_IMG.onload=()=>{ WH_READY=true; };
-WH_IMG.onerror=()=>{ WH_READY=false; };
+WH_IMG.onerror=()=>{ WH_READY=false; debugSet("warehouse_iso.png not found at root"); };
 WH_IMG.src = `${WAREHOUSE_ICON_SRC}?v=${Date.now()}`;
 
 const WH_BASE=42, WH_MIN=28, WH_MAX=64;
 const sizeByZoom = z => Math.max(WH_MIN, Math.min(WH_MAX, WH_BASE*(0.9 + (z-5)*0.22)));
-
 function drawWarehouseIcons(){
   if(!tctx) return;
   const z=map.getZoom(); tctx.font="bold 11px system-ui, Segoe UI, Roboto, sans-serif";
@@ -258,14 +286,25 @@ function narrationFor(data,mode){
   lines.push("Monitoring inventory risk and ETA recovery while the network clears.");
   return lines;
 }
-window.loadScenario = async function(file,label){
+async function fetchOrDefault(file, fallback, modeLabel){
+  try{
+    const url = `${file}${file.includes('?')?'&':'?'}v=${Date.now()}`;
+    const res = await fetch(url, { cache:'no-store' });
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    debugSet(`Loaded ${file}`);
+    return json;
+  }catch(err){
+    debugSet(`${modeLabel}: using built-in default (${err.message})`);
+    return fallback;
+  }
+}
+window.loadScenario = async function(file, label){
   try{
     trucks.length=0; clearTTS();
-    const url=`${file}${file.includes('?')?'&':'?'}v=${Date.now()}`;
-    const res=await fetch(url,{cache:'no-store'}); if(!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data=await res.json();
+    const isAfter = /after/i.test(file) || /after/i.test(label||"");
+    const data = await fetchOrDefault(file, isAfter?DEFAULT_AFTER:DEFAULT_BEFORE, isAfter?"After":"Before");
 
-    // Reroutes FC
     const reroutes=new Map(); const rerouteFeatures=[];
     if(Array.isArray(data.reroutes)){
       for(const r of data.reroutes){
@@ -276,32 +315,29 @@ window.loadScenario = async function(file,label){
       }
     }
     ensureRoadLayers({type:"FeatureCollection",features:rerouteFeatures});
-
     for(const tr of (data.trucks||[])) spawnTruck(tr, reroutes);
-
     fitToWarehouses();
-    const mode = /after/i.test(file)||/after/i.test(label||"") ? "after":"before";
-    speakQueue(narrationFor(data,mode), 350);
+    speakQueue(narrationFor(data, isAfter?"after":"before"), 350);
   }catch(err){
-    console.error("loadScenario error:", err);
-    speakQueue([`Scenario load error: ${err.message}`]);
+    debugSet(`loadScenario failed: ${err.message}`); speakQueue([`Scenario load error: ${err.message}`]);
   }
 };
 
 /* ---------- Boot ---------- */
 map.on("load", ()=>{
-  ensureOverlayCanvas();         // <-- create / attach overlay reliably
-  ensureRoadLayers({type:"FeatureCollection",features:[]}); // base corridors present
-  loadScenario("scenario_before.json","Before Disruption");
+  ensureOverlayCanvas();                         // make sure canvas exists
+  ensureRoadLayers({type:"FeatureCollection",features:[]});  // base corridors
+  loadScenario("scenario_before.json","Before Disruption");  // will fall back if missing
   fitToWarehouses();
 });
-map.on("styledata", ()=>{         // if style refreshes, re-ensure layers exist
-  try{ ensureRoadLayers(map.getSource("reroutes") ? map.getSource("reroutes")._data || {type:"FeatureCollection",features:[]} : {type:"FeatureCollection",features:[]}); }catch(e){}
+map.on("styledata", ()=>{ // if style refreshes, re-ensure layers exist
+  try{
+    const src = map.getSource("reroutes");
+    const data = src && (src._data || src.serialize?.().data) || {type:"FeatureCollection",features:[]};
+    ensureRoadLayers(data);
+  }catch(e){}
 });
 
-// Hide any legacy UI if present
-["commentary","timeline"].forEach(id=>{ const el=document.getElementById(id); if(el) el.style.display="none"; });
-
-// Continuous render loop
+// Continuous draw loop
 function loop(){ const now=performance.now(); __dt=Math.min(0.05,(now-__lastTS)/1000); __lastTS=now; drawTrucks(); requestAnimationFrame(loop); }
 requestAnimationFrame(loop);
