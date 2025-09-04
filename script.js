@@ -1,14 +1,14 @@
 /* =========================================================================
-   Agentic Twin — Staged Disruptions
+   Agentic Twin — Staged Disruptions (Clear, Slow Narration)
    - White base corridors
-   - One-at-a-time red disruption (Before)
-   - Same corridor flips green on After, then auto-advance
-   - Warehouse stats card (inventory, inflow/outflow)
-   - Truck numbers rendered on each vehicle
-   - No timeline / no commentary panel
+   - One-at-a-time red disruption (Before) — pauses trucks on that corridor
+   - After Correction: show full reroute as GREEN (can be multi-segment),
+     release paused trucks onto the green path
+   - Slow, clear voice-over
+   - Warehouse stats + truck numbers; no timeline / commentary
    ======================================================================= */
 
-/* -------------------- small debug pill (optional) -------------------- */
+/* -------------------- tiny debug pill (optional) -------------------- */
 let __DBG = null;
 function debugSet(msg) {
   if (!__DBG) {
@@ -22,9 +22,9 @@ function debugSet(msg) {
 window.addEventListener("error", (e) => debugSet(`Error: ${e.message || e}`));
 
 /* -------------------- config -------------------- */
-const STYLE_URL = "style.json"; // your MapLibre/MapTiler style
+const STYLE_URL = "style.json";
 const MAP_INIT = { center: [78.9629, 21.5937], zoom: 5.5, minZoom: 3, maxZoom: 12 };
-const WAREHOUSE_ICON_SRC = "warehouse_iso.png"; // transparent PNG (root with index.html)
+const WAREHOUSE_ICON_SRC = "warehouse_iso.png";
 
 /* -------------------- anchors -------------------- */
 const CITY = {
@@ -66,7 +66,7 @@ function networkGeoJSON(){
   }))};
 }
 
-/* -------------------- simple scenario (fallback) -------------------- */
+/* -------------------- default scenario (fallback) -------------------- */
 const DEFAULT_BEFORE = {
   warehouses: Object.keys(CITY).map(id=>({id,location:CITY[id].name.split("—")[1].trim(),inventory:500})),
   trucks: [
@@ -83,13 +83,85 @@ const DEFAULT_BEFORE = {
   ]
 };
 
-/* -------------------- staged disruptions list -------------------- */
+/* -------------------- staged disruptions with explicit reroutes ---------------
+
+   Each step:
+   - route:   the red disrupted segment (pair of WH IDs)
+   - reroute: array of [from,to] segments to light GREEN (full detour)
+   - cause / fix: narration lines
+----------------------------------------------------------------------------- */
 const STEPS = [
-  { id:"D1", route:["WH1","WH2"], ask:"Disruption detected on Delhi–Mumbai corridor. Press After Correction to apply the fix, or I’ll proceed shortly." },
-  { id:"D2", route:["WH4","WH1"], ask:"Disruption detected on Hyderabad–Delhi corridor." },
-  { id:"D3", route:["WH5","WH2"], ask:"Disruption detected on Kolkata–Mumbai corridor." },
-  { id:"D4", route:["WH2","WH3"], ask:"Disruption detected on Mumbai–Bangalore corridor." },
-  { id:"D5", route:["WH5","WH3"], ask:"Disruption detected on Kolkata–Bangalore corridor." },
+  {
+    id:"D1",
+    route:["WH1","WH2"],
+    reroute:[["WH1","WH4"],["WH4","WH2"]],
+    cause:[
+      "Disruption one.",
+      "The Delhi to Mumbai corridor has a closure near Rajasthan.",
+      "A truck is held at the midpoint for safety and to avoid congestion."
+    ],
+    fix:[
+      "We reroute Delhi to Mumbai through Hyderabad.",
+      "Green segments show the new safe path: Delhi to Hyderabad, then Hyderabad to Mumbai.",
+      "Traffic is released after confirming capacity on the detour."
+    ]
+  },
+  {
+    id:"D2",
+    route:["WH4","WH1"],
+    reroute:[["WH4","WH2"],["WH2","WH3"],["WH3","WH1"]],
+    cause:[
+      "Disruption two.",
+      "Hyderabad to Delhi is slowed by a long work zone.",
+      "We hold an approaching truck on the link."
+    ],
+    fix:[
+      "We reroute via Mumbai and Bangalore back up to Delhi to balance load.",
+      "Observe the green path spanning Hyderabad to Mumbai, Mumbai to Bangalore, and Bangalore to Delhi."
+    ]
+  },
+  {
+    id:"D3",
+    route:["WH5","WH2"],
+    reroute:[["WH5","WH4"],["WH4","WH2"]],
+    cause:[
+      "Disruption three.",
+      "Kolkata to Mumbai is constrained by flooding risk near central India.",
+      "We stage a truck in place until a detour is validated."
+    ],
+    fix:[
+      "We divert via Hyderabad, then to Mumbai.",
+      "Green links now indicate the safe flow: Kolkata to Hyderabad, Hyderabad to Mumbai."
+    ]
+  },
+  {
+    id:"D4",
+    route:["WH2","WH3"],
+    reroute:[["WH2","WH4"],["WH4","WH3"]],
+    cause:[
+      "Disruption four.",
+      "Mumbai to Bangalore has a crash related closure.",
+      "A nearby truck pauses to avoid the queue."
+    ],
+    fix:[
+      "We redirect Mumbai to Bangalore through Hyderabad.",
+      "Green segments show Mumbai to Hyderabad and Hyderabad to Bangalore."
+    ]
+  },
+  {
+    id:"D5",
+    route:["WH5","WH3"],
+    reroute:[["WH5","WH4"],["WH4","WH3"]],
+    cause:[
+      "Final disruption.",
+      "Kolkata to Bangalore sees a landslide related block in the eastern corridor.",
+      "A truck is held while we compute a detour."
+    ],
+    fix:[
+      "We route Kolkata to Hyderabad, then onward to Bangalore.",
+      "Green links confirm the alternate path is open and stable."
+    ]
+  }
 ];
 
 /* -------------------- MapLibre map -------------------- */
@@ -136,14 +208,14 @@ function ensureRoadLayers(){
   if(!map.getSource("routes")) map.addSource("routes",{type:"geojson",data:net});
   else map.getSource("routes").setData(net);
 
-  if(!map.getLayer("routes-base")){
-    // halo to improve legibility
+  if(!map.getLayer("routes-halo")){
     map.addLayer({
       id:"routes-halo", type:"line", source:"routes",
       paint:{ "line-color":"#9fb4ff", "line-opacity":0.22, "line-width":7.5 },
       layout:{ "line-cap":"round", "line-join":"round" }
     });
-    // white base
+  }
+  if(!map.getLayer("routes-base")){
     map.addLayer({
       id:"routes-base", type:"line", source:"routes",
       paint:{ "line-color":"#ffffff", "line-opacity":0.9, "line-width":3.0 },
@@ -151,22 +223,20 @@ function ensureRoadLayers(){
     });
   }
 
-  // red highlight (current disruption)
   if(!map.getSource("alert")) map.addSource("alert",{type:"geojson",data:{type:"FeatureCollection",features:[]}});
   if(!map.getLayer("alert-red")){
     map.addLayer({
       id:"alert-red", type:"line", source:"alert",
-      paint:{ "line-color":"#ff6b6b", "line-opacity":0.95, "line-width":4.2 },
+      paint:{ "line-color":"#ff6b6b", "line-opacity":0.96, "line-width":4.2 },
       layout:{ "line-cap":"round", "line-join":"round" }
     });
   }
 
-  // green fix layer
   if(!map.getSource("fix")) map.addSource("fix",{type:"geojson",data:{type:"FeatureCollection",features:[]}});
   if(!map.getLayer("fix-green")){
     map.addLayer({
       id:"fix-green", type:"line", source:"fix",
-      paint:{ "line-color":"#00d08a", "line-opacity":0.95, "line-width":4.6 },
+      paint:{ "line-color":"#00d08a", "line-opacity":0.96, "line-width":4.8 },
       layout:{ "line-cap":"round", "line-join":"round" }
     });
   }
@@ -188,7 +258,7 @@ WH_IMG.onload=()=>{ WH_READY=true; };
 WH_IMG.onerror=()=>{ WH_READY=false; debugSet("warehouse_iso.png missing at root"); };
 WH_IMG.src = `${WAREHOUSE_ICON_SRC}?v=${Date.now()}`;
 
-const WH_BASE=30, WH_MIN=18, WH_MAX=42;
+const WH_BASE=26, WH_MIN=16, WH_MAX=34;
 const sizeByZoom = z => Math.max(WH_MIN, Math.min(WH_MAX, WH_BASE*(0.9 + (z-5)*0.18)));
 function drawWarehouses(){
   if(!ctx) return; const z=map.getZoom();
@@ -204,7 +274,7 @@ function drawWarehouses(){
 
 /* -------------------- trucks -------------------- */
 const trucks=[]; const truckNumberById=new Map();
-const SPEED_MULTIPLIER=9.2, MIN_GAP_PX=50, CROSS_GAP_PX=34, LANES_PER_ROUTE=3, LANE_WIDTH_PX=6.5, MIN_STEP=0.010;
+const SPEED_MULTIPLIER=8.6, MIN_GAP_PX=50, CROSS_GAP_PX=34, LANES_PER_ROUTE=3, LANE_WIDTH_PX=6.5, MIN_STEP=0.010;
 
 function defaultPathIDs(o,d){
   const k1=keyFor(o,d), k2=keyFor(d,o);
@@ -220,12 +290,19 @@ function spawnTruck(tr, idx){
   const latlon=expandIDsToLatLon(ids); if(latlon.length<2) return;
 
   const startT=Math.random()*0.55;
-  const base=delayed?2.88:4.32;
+  const base=delayed?2.88:4.00;
   const speed=base*(0.92+Math.random()*0.16);
   const startDelay=300+Math.random()*800;
   const laneIndex=((hashStr(tr.id)%LANES_PER_ROUTE)+LANES_PER_ROUTE)%LANES_PER_ROUTE;
 
-  trucks.push({ id:tr.id, latlon, seg:0, t:startT, dir:1, speed, delayed, laneIndex, startAt:performance.now()+startDelay });
+  trucks.push({
+    id:tr.id, origin:tr.origin, dest:tr.destination,
+    latlon, seg:0, t:startT, dir:1, speed,
+    delayed, laneIndex,
+    startAt:performance.now()+startDelay,
+    paused:false,         // NEW
+    savedPath:null        // NEW: to restore/override paths when pausing/rerouting
+  });
   truckNumberById.set(tr.id, idx+1);
 }
 function drawVectorTruck(g,w,h,delayed,number){
@@ -237,7 +314,7 @@ function drawVectorTruck(g,w,h,delayed,number){
   g.fillStyle=cg; g.strokeStyle="#5f6771"; g.beginPath(); g.roundRect(-w/2,-ch/2,cw,ch,3); g.fill(); g.stroke();
   g.fillStyle="#26303a"; g.fillRect(-w/2+2,-ch*0.44,cw-4,ch*0.32);
 
-  // small number badge
+  // number badge
   const R=7; g.fillStyle="#ffffff"; g.strokeStyle="#20262e"; g.lineWidth=1.2;
   g.beginPath(); g.arc(trW*0.18,-trH*0.2,R,0,Math.PI*2); g.fill(); g.stroke();
   g.fillStyle="#111"; g.font="bold 9px system-ui"; g.textAlign="center"; g.textBaseline="middle";
@@ -255,40 +332,46 @@ function drawFrame(){
 
   for(const T of trucks){
     if(now<T.startAt) continue;
+
     const a=T.latlon[T.seg], b=T.latlon[T.seg+T.dir] || a;
     const aP=segProject(a), bP=segProject(b);
     const segLenPx=Math.max(1,Math.hypot(bP.x-aP.x,bP.y-aP.y));
-    let pxPerSec=SPEED_MULTIPLIER*T.speed*(0.9+(map.getZoom()-4)*0.12);
-    let step=(pxPerSec*__dt)/segLenPx;
 
-    const myProg=T.t*segLenPx; let minLead=Infinity;
-    for(const O of trucks){
-      if(O===T||now<O.startAt) continue;
-      if(O.latlon[O.seg]===T.latlon[T.seg] && O.latlon[O.seg+O.dir]===T.latlon[T.seg+T.dir] && O.dir===T.dir){
-        const a2=segProject(O.latlon[O.seg]), b2=segProject(O.latlon[O.seg+O.dir]);
-        const seg2=Math.max(1,Math.hypot(b2.x-a2.x,b2.y-a2.y));
-        const oProg=O.t*seg2; if(oProg>myProg) minLead=Math.min(minLead,oProg-myProg);
+    if(!T.paused){
+      let pxPerSec=SPEED_MULTIPLIER*T.speed*(0.9+(map.getZoom()-4)*0.12);
+      let step=(pxPerSec*__dt)/segLenPx;
+
+      // same-segment spacing
+      const myProg=T.t*segLenPx; let minLead=Infinity;
+      for(const O of trucks){
+        if(O===T||now<O.startAt) continue;
+        if(O.latlon[O.seg]===T.latlon[T.seg] && O.latlon[O.seg+O.dir]===T.latlon[T.seg+T.dir] && O.dir===T.dir){
+          const a2=segProject(O.latlon[O.seg]), b2=segProject(O.latlon[O.seg+O.dir]);
+          const seg2=Math.max(1,Math.hypot(b2.x-a2.x,b2.y-a2.y));
+          const oProg=O.t*seg2; if(oProg>myProg) minLead=Math.min(minLead,oProg-myProg);
+        }
       }
-    }
-    if(isFinite(minLead)&&minLead<MIN_GAP_PX) step*=Math.max(0.25,(minLead/MIN_GAP_PX)*0.7);
+      if(isFinite(minLead)&&minLead<MIN_GAP_PX) step*=Math.max(0.25,(minLead/MIN_GAP_PX)*0.7);
 
-    const x1=aP.x+(bP.x-aP.x)*T.t, y1=aP.y+(bP.y-aP.y)*T.t; let nearest=Infinity;
-    for(const O of trucks){
-      if(O===T||now<O.startAt) continue;
-      const aO=segProject(O.latlon[O.seg]), bO=segProject(O.latlon[O.seg+O.dir]);
-      const xO=aO.x+(bO.x-aO.x)*O.t, yO=aO.y+(bO.y-aO.y)*O.t;
-      nearest=Math.min(nearest, Math.hypot(xO-x1,yO-y1));
-    }
-    if(isFinite(nearest)&&nearest<CROSS_GAP_PX) step*=Math.max(0.30,(nearest/CROSS_GAP_PX)*0.6);
+      // cross-spacing
+      const x1=aP.x+(bP.x-aP.x)*T.t, y1=aP.y+(bP.y-aP.y)*T.t; let nearest=Infinity;
+      for(const O of trucks){
+        if(O===T||now<O.startAt) continue;
+        const aO=segProject(O.latlon[O.seg]), bO=segProject(O.latlon[O.seg+O.dir]);
+        const xO=aO.x+(bO.x-aO.x)*O.t, yO=aO.y+(bO.y-aO.y)*O.t;
+        nearest=Math.min(nearest, Math.hypot(xO-x1,yO-y1));
+      }
+      if(isFinite(nearest)&&nearest<CROSS_GAP_PX) step*=Math.max(0.30,(nearest/CROSS_GAP_PX)*0.6);
 
-    step=Math.max(step,MIN_STEP);
-    T.t+=step;
-    if(T.t>=1){ T.seg+=T.dir; T.t-=1; if(T.seg<=0){T.seg=0;T.dir=1;} else if(T.seg>=T.latlon.length-1){T.seg=T.latlon.length-1;T.dir=-1;} }
+      step=Math.max(step,MIN_STEP);
+      T.t+=step;
+      if(T.t>=1){ T.seg+=T.dir; T.t-=1; if(T.seg<=0){T.seg=0;T.dir=1;} else if(T.seg>=T.latlon.length-1){T.seg=T.latlon.length-1;T.dir=-1;} }
+    }
 
     const theta=Math.atan2(bP.y-aP.y,bP.x-aP.x);
     const nx=-(bP.y-aP.y), ny=(bP.x-aP.x), nL=Math.max(1,Math.hypot(nx,ny));
     const laneZero=T.laneIndex-(LANES_PER_ROUTE-1)/2, off=laneZero*LANE_WIDTH_PX;
-    const x=x1+(nx/nL)*off, y=y1+(ny/nL)*off;
+    const x=aP.x+(bP.x-aP.x)*T.t+(nx/nL)*off, y=aP.y+(bP.y-aP.y)*T.t+(ny/nL)*off;
 
     const z=map.getZoom(), scale=1.0+(z-4)*0.12, w=28*scale, h=14*scale;
     const num=truckNumberById.get(T.id)||0;
@@ -298,7 +381,7 @@ function drawFrame(){
   drawWarehouses();
 }
 
-/* -------------------- narration (concise) -------------------- */
+/* -------------------- narration helpers (slower) -------------------- */
 const synth = window.speechSynthesis;
 let VOICE = null;
 function pickVoice(){
@@ -312,12 +395,12 @@ if(!VOICE && synth) synth.onvoiceschanged = ()=>{ VOICE = pickVoice(); };
 
 let ttsTimers=[];
 function clearTTS(){ ttsTimers.forEach(clearTimeout); ttsTimers=[]; try{synth?.cancel?.();}catch(e){} }
-function speakOnce(text){ if(!synth||!text) return; const u=new SpeechSynthesisUtterance(String(text)); if(VOICE) u.voice=VOICE; u.rate=1.02; u.pitch=1.02; u.volume=1; synth.speak(u); }
-function speakQueue(lines,gap=300){
+function speakOnce(text, rate=0.92){ if(!synth||!text) return; const u=new SpeechSynthesisUtterance(String(text)); if(VOICE) u.voice=VOICE; u.rate=rate; u.pitch=1.0; u.volume=1; synth.speak(u); }
+function speakQueue(lines, gap=650, rate=0.92){
   clearTTS(); let t=0;
   lines.forEach(line=>{
-    const dur=Math.max(1100,38*line.length);
-    ttsTimers.push(setTimeout(()=>speakOnce(line),t));
+    const dur=Math.max(1600,45*line.length); // slower pacing
+    ttsTimers.push(setTimeout(()=>speakOnce(line,rate),t));
     t+=dur+gap;
   });
 }
@@ -331,7 +414,6 @@ async function fetchOrDefault(file, fallback){
     return await res.json();
   }catch(err){ debugSet(`Using default: ${err.message}`); return fallback; }
 }
-
 function updateStats(data){
   const tbody=document.querySelector("#statsTable tbody");
   tbody.innerHTML="";
@@ -351,24 +433,95 @@ function updateStats(data){
   });
 }
 
+/* -------------------- PAUSE / REROUTE control -------------------- */
+function odMatch(ids, o, d){
+  const a=ids[0], b=ids[ids.length-1];
+  return (a===o && b===d) || (a===d && b===o);
+}
+function setTruckPath(T, latlon, toMid=false){
+  if(!latlon || latlon.length<2) return;
+  T.latlon = latlon;
+  T.seg = 0; T.dir = 1; T.t = toMid ? 0.5 : 0.0;
+}
+function pauseTrucksOnRoute(step, limit=2){
+  const ids = step.route;
+  const latlon = expandIDsToLatLon(ids);
+  let count=0;
+  for(const T of trucks){
+    const pathIDs = defaultPathIDs(T.origin, T.dest);
+    if(odMatch(pathIDs, ids[0], ids[1]) && count<limit){
+      if(!T.savedPath) T.savedPath = { latlon:[...T.latlon], seg:T.seg, t:T.t, dir:T.dir };
+      setTruckPath(T, latlon, true); // put in the middle of red corridor
+      T.paused = true;
+      count++;
+    }
+  }
+}
+function releasePausedTrucks(step){
+  const latlonReroute = step.reroute?.length
+    ? expandIDsToLatLon(step.reroute.flat()) // stitched segments
+    : null;
+
+  for(const T of trucks){
+    if(!T.paused) continue;
+    // Only release those paused on this step's route
+    const ids = step.route;
+    const pathIDs = defaultPathIDs(T.origin, T.dest);
+    if(odMatch(pathIDs, ids[0], ids[1])){
+      if(latlonReroute){
+        setTruckPath(T, latlonReroute, false); // start moving on the green route
+      }else if(T.savedPath){
+        setTruckPath(T, T.savedPath.latlon, false);
+      }
+      T.paused = false;
+      T.savedPath = null;
+    }
+  }
+}
+function unpauseAllIfAny(){
+  for(const T of trucks){
+    if(T.paused){
+      if(T.savedPath) setTruckPath(T, T.savedPath.latlon, false);
+      T.paused=false; T.savedPath=null;
+    }
+  }
+}
+
 /* -------------------- disruption stepper -------------------- */
 let stepIndex=0, advanceTimer=null;
 
 function fcFor(ids){ return {type:"FeatureCollection",features:[featureForRoute(ids)]}; }
+function fcForReroute(segPairs){
+  const feats=(segPairs||[]).map(pair=>featureForRoute(pair));
+  return {type:"FeatureCollection",features:feats};
+}
 function clearTimer(){ if(advanceTimer) { clearTimeout(advanceTimer); advanceTimer=null; } }
 
 function showBeforeStep(){
   clearTimer(); clearTTS();
+  unpauseAllIfAny();
   const step = STEPS[stepIndex]; if(!step){ finishShow(); return; }
+
   // red the current route, clear green
   setSourceFC("alert",[featureForRoute(step.route)]);
   setSourceFC("fix",[]);
-  speakQueue([step.ask]);
-  // auto-advance in 6s to next disruption (without green if user doesn't click)
-  advanceTimer=setTimeout(()=>{ whiteOutCurrentThenNext(); }, 6000);
+
+  // PAUSE a couple of trucks on that red corridor and keep them still while we explain
+  pauseTrucksOnRoute(step, 2);
+
+  // slow narration
+  speakQueue([
+    ...step.cause,
+    "To move ahead, press After Correction,",
+    "otherwise I will continue to the next disruption shortly."
+  ], /*gap*/800, /*rate*/0.9);
+
+  // give time for the viewer to digest the disruption (10s)
+  advanceTimer=setTimeout(()=>{ whiteOutCurrentThenNext(); }, 10000);
 }
 function whiteOutCurrentThenNext(){
-  // Clear red and move to next step
+  // If user didn't apply correction, clear the red and move on; also unpause trucks back to original paths
+  unpauseAllIfAny();
   setSourceFC("alert",[]);
   stepIndex++;
   if(stepIndex>=STEPS.length){ finishShow(); return; }
@@ -377,22 +530,29 @@ function whiteOutCurrentThenNext(){
 function applyAfterForCurrent(){
   clearTimer(); clearTTS();
   const step = STEPS[stepIndex]; if(!step){ finishShow(); return; }
-  // flip to green
+
+  // flip to GREEN (can be multiple segments)
   setSourceFC("alert",[]);
-  setSourceFC("fix",[featureForRoute(step.route)]);
-  speakQueue(["Fix applied. Corridor clear and reroute successful."]);
-  // after 3s, clear green and move to next red step
+  setSourceFC("fix", fcForReroute(step.reroute).features);
+
+  // release the paused trucks onto the green reroute
+  releasePausedTrucks(step);
+
+  // explain fix slowly
+  speakQueue(step.fix, /*gap*/800, /*rate*/0.9);
+
+  // keep green visible for a moment, then clear and proceed
   advanceTimer=setTimeout(()=>{
     setSourceFC("fix",[]);
     stepIndex++;
     if(stepIndex>=STEPS.length){ finishShow(); return; }
     showBeforeStep();
-  }, 3000);
+  }, 9000);
 }
 function finishShow(){
   clearTimer(); clearTTS();
   setSourceFC("alert",[]); setSourceFC("fix",[]);
-  speakQueue(["All disruptions processed. Network stable."]);
+  speakQueue(["All disruptions processed. Network stable and balanced."], 700, 0.95);
 }
 
 /* -------------------- boot -------------------- */
@@ -412,7 +572,7 @@ const mapReady = new Promise(res => map.on("load", res));
   const b=new maplibregl.LngLatBounds(); Object.values(CITY).forEach(c=>b.extend([c.lon,c.lat]));
   map.fitBounds(b,{padding:{top:60,left:60,right:320,bottom:60},duration:800,maxZoom:6.8});
 
-  // kick off stepper
+  // start stepper
   stepIndex=0; showBeforeStep();
 })();
 
