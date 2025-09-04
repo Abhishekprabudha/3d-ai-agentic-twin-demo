@@ -28,7 +28,7 @@
     { "id": "T15", "origin": "WH5", "destination": "WH4", "status": "On-Time",  "delay_hours": 0 }
   ],
   "reroutes": [
-    { "truckId": "T1",  "path": ["WH1","WH4","WH2"] },
+    { "truckId": "T1",  "path": ["WH1","WH2","WH4"] },
     { "truckId": "T7",  "path": ["WH3","WH4","WH2"] },
     { "truckId": "T11", "path": ["WH4","WH3","WH2"] },
     { "truckId": "T3",  "path": ["WH1","WH4","WH5"] },
@@ -37,14 +37,14 @@
   "commentary": {
     "static": "After correction: five disruptions resolved via dynamic reroutes. Inventory risk at Mumbai and Kolkata contained; service levels stabilized.",
     "timeline": [
-      { "delay_ms":  400, "msg": "Routing update engaged. Priority is to protect Mumbai and Kolkata availability." },
-      { "delay_ms":  600, "msg": "T1 goes Delhi → Hyderabad → Mumbai to bypass landslide on the north–west corridor." },
-      { "delay_ms":  600, "msg": "T7 detours Bangalore → Hyderabad → Mumbai to avoid flooded section." },
-      { "delay_ms":  600, "msg": "T11 re-routed Hyderabad → Bangalore → Mumbai to clear the accident zone." },
-      { "delay_ms":  600, "msg": "T3 switches Delhi → Hyderabad → Kolkata to skirt roadworks on the eastern trunk." },
-      { "delay_ms":  600, "msg": "T14 diverts Kolkata → Delhi → Mumbai to bypass severe congestion." },
-      { "delay_ms":  800, "msg": "ETA recovery within tolerance. Buffer stock moved from Hyderabad to cover Mumbai’s demand dip." },
-      { "delay_ms":  800, "msg": "Final check: all five warehouses within target inventory bands; backorders prevented." }
+      { "delay_ms": 400, "msg": "Routing update engaged. Priority is to protect Mumbai and Kolkata availability." },
+      { "delay_ms": 600, "msg": "T1 goes Delhi → Mumbai → Hyderabad to bypass landslide on the north–west corridor." },
+      { "delay_ms": 600, "msg": "T7 detours Bangalore → Hyderabad → Mumbai to avoid flooded section." },
+      { "delay_ms": 600, "msg": "T11 re-routed Hyderabad → Bangalore → Mumbai to clear the accident zone." },
+      { "delay_ms": 600, "msg": "T3 switches Delhi → Hyderabad → Kolkata to skirt roadworks on the eastern trunk." },
+      { "delay_ms": 600, "msg": "T14 diverts Kolkata → Delhi → Mumbai to bypass severe congestion." },
+      { "delay_ms": 800, "msg": "ETA recovery within tolerance. Buffer stock moved from Hyderabad to cover Mumbai’s demand dip." },
+      { "delay_ms": 800, "msg": "Final check: all five warehouses within target inventory bands; backorders prevented." }
     ]
   }
 }
