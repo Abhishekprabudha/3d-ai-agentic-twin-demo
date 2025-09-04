@@ -1,5 +1,6 @@
 /* ============================================================
    Agentic Twin — Focused Load + Continuous Motion + ISO WH
+   (warehouse image now expected at repo root: /warehouse_iso.png)
    ============================================================ */
 
 /* ---------- Map config ---------- */
@@ -127,8 +128,9 @@ function addVTroads(){
   let phase=0; (function dashTick(){ phase=(phase+0.12)%3.0; try{ map.setPaintProperty("routes-motion","line-dasharray",[0.5+phase,2.5]); }catch(e){} requestAnimationFrame(dashTick); })();
 }
 
-/* ---------- Warehouse icon: your isometric image in a rounded badge ---------- */
-const WAREHOUSE_ICON_SRC = "assets/warehouse_iso.png"; // << place your image here
+/* ---------- Warehouse icon: root image in a rounded badge ---------- */
+// Put /warehouse_iso.png next to index.html in the repo root
+const WAREHOUSE_ICON_SRC = "warehouse_iso.png"; // << root-level image
 
 // helper: draw image “cover” (like CSS background-size: cover)
 function drawImageCover(ctx, img, dx, dy, dw, dh) {
@@ -147,7 +149,8 @@ let WH_IMG = new Image(); let WH_READY = false;
 function loadWarehouseIcon(){
   WH_IMG.onload = ()=>{ WH_READY = true; };
   WH_IMG.onerror = ()=>{ WH_READY = false; };
-  WH_IMG.src = WAREHOUSE_ICON_SRC;
+  // cache-bust to avoid old CDN copies on Pages
+  WH_IMG.src = `${WAREHOUSE_ICON_SRC}?v=${Date.now()}`;
 }
 loadWarehouseIcon();
 
