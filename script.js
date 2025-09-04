@@ -1,13 +1,14 @@
 /* =========================================================================
-   Agentic Twin — Stable Roads Build (no dash animation)
-   - Solid red network + solid green reroutes
-   - Continuous trucks & narration
-   - No styledata hooks, no animated line-dash (prevents vanishing)
-   - Built-in DEFAULT scenarios if JSON fetch fails
-   - Small on-screen debug message (bottom-left)
+   Agentic Twin — Staged Disruptions
+   - White base corridors
+   - One-at-a-time red disruption (Before)
+   - Same corridor flips green on After, then auto-advance
+   - Warehouse stats card (inventory, inflow/outflow)
+   - Truck numbers rendered on each vehicle
+   - No timeline / no commentary panel
    ======================================================================= */
 
-/* -------------------- tiny debug pill -------------------- */
+/* -------------------- small debug pill (optional) -------------------- */
 let __DBG = null;
 function debugSet(msg) {
   if (!__DBG) {
@@ -20,12 +21,12 @@ function debugSet(msg) {
 }
 window.addEventListener("error", (e) => debugSet(`Error: ${e.message || e}`));
 
-/* -------------------- map config -------------------- */
+/* -------------------- config -------------------- */
 const STYLE_URL = "style.json"; // your MapLibre/MapTiler style
-const MAP_INIT = { center: [78.9629, 21.5937], zoom: 5.4, minZoom: 3, maxZoom: 12 };
-const WAREHOUSE_ICON_SRC = "warehouse_iso.png"; // PNG with transparent bg at repo root
+const MAP_INIT = { center: [78.9629, 21.5937], zoom: 5.5, minZoom: 3, maxZoom: 12 };
+const WAREHOUSE_ICON_SRC = "warehouse_iso.png"; // transparent PNG (root with index.html)
 
-/* -------------------- warehouse anchor points -------------------- */
+/* -------------------- anchors -------------------- */
 const CITY = {
   WH1: { name: "WH1 — Delhi",     lat: 28.6139, lon: 77.2090 },
   WH2: { name: "WH2 — Mumbai",    lat: 19.0760, lon: 72.8777 },
@@ -34,7 +35,7 @@ const CITY = {
   WH5: { name: "WH5 — Kolkata",   lat: 22.5726, lon: 88.3639 },
 };
 
-/* -------------------- densified road corridors (lat,lon) -------------------- */
+/* -------------------- corridors (lat,lon arrays) -------------------- */
 const RP = {
   "WH1-WH2": [[28.6139,77.2090],[27.0,76.8],[25.6,75.2],[24.1,73.5],[23.0,72.6],[21.17,72.83],[19.9,72.9],[19.076,72.8777]],
   "WH2-WH3": [[19.0760,72.8777],[18.52,73.8567],[16.9,74.5],[15.9,74.5],[13.8,76.4],[12.9716,77.5946]],
@@ -65,7 +66,7 @@ function networkGeoJSON(){
   }))};
 }
 
-/* -------------------- simple scenarios (fallbacks) -------------------- */
+/* -------------------- simple scenario (fallback) -------------------- */
 const DEFAULT_BEFORE = {
   warehouses: Object.keys(CITY).map(id=>({id,location:CITY[id].name.split("—")[1].trim(),inventory:500})),
   trucks: [
@@ -79,17 +80,17 @@ const DEFAULT_BEFORE = {
     {id:"T8", origin:"WH5", destination:"WH1", status:"On-Time", delay_hours:0},
     {id:"T9", origin:"WH5", destination:"WH2", status:"On-Time", delay_hours:0},
     {id:"T10",origin:"WH5", destination:"WH3", status:"On-Time", delay_hours:0},
-  ],
-  reroutes:[]
+  ]
 };
-const DEFAULT_AFTER = {
-  ...DEFAULT_BEFORE,
-  reroutes:[
-    {truckId:"T4", path:["WH4","WH5","WH1"]},
-    {truckId:"T9", path:["WH5","WH4","WH2"]}
-  ],
-  trucks: DEFAULT_BEFORE.trucks.map(t=> t.id==="T4" ? {...t, status:"Rerouted"} : t)
-};
+
+/* -------------------- staged disruptions list -------------------- */
+const STEPS = [
+  { id:"D1", route:["WH1","WH2"], ask:"Disruption detected on Delhi–Mumbai corridor. Press After Correction to apply the fix, or I’ll proceed shortly." },
+  { id:"D2", route:["WH4","WH1"], ask:"Disruption detected on Hyderabad–Delhi corridor." },
+  { id:"D3", route:["WH5","WH2"], ask:"Disruption detected on Kolkata–Mumbai corridor." },
+  { id:"D4", route:["WH2","WH3"], ask:"Disruption detected on Mumbai–Bangalore corridor." },
+  { id:"D5", route:["WH5","WH3"], ask:"Disruption detected on Kolkata–Bangalore corridor." },
+];
 
 /* -------------------- MapLibre map -------------------- */
 const map = new maplibregl.Map({
@@ -103,7 +104,7 @@ const map = new maplibregl.Map({
 });
 map.addControl(new maplibregl.NavigationControl({visualizePitch:false}), "top-left");
 
-/* -------------------- overlay canvas -------------------- */
+/* -------------------- overlay canvas for trucks/labels -------------------- */
 let overlay=null, ctx=null;
 function ensureCanvas(){
   overlay = document.getElementById("trucksCanvas");
@@ -128,39 +129,57 @@ function resizeCanvas(){
 }
 window.addEventListener("resize", resizeCanvas);
 
-/* -------------------- roads (NO animation) -------------------- */
-function ensureRoadLayers(rerouteFC){
-  try{
-    const net = networkGeoJSON();
+/* -------------------- base white routes + highlight layers -------------------- */
+function ensureRoadLayers(){
+  const net = networkGeoJSON();
 
-    if(!map.getSource("routes")){
-      map.addSource("routes",{type:"geojson",data:net});
-    }else{
-      map.getSource("routes").setData(net);
-    }
-    if(!map.getLayer("routes-red")){
-      map.addLayer({
-        id:"routes-red", type:"line", source:"routes",
-        layout:{ "line-cap":"round", "line-join":"round"},
-        paint:{ "line-color":"#ff6b6b", "line-opacity":0.5, "line-width":3.2 }
-      });
-    }
+  if(!map.getSource("routes")) map.addSource("routes",{type:"geojson",data:net});
+  else map.getSource("routes").setData(net);
 
-    if(!map.getSource("reroutes")){
-      map.addSource("reroutes",{type:"geojson",data:rerouteFC});
-    }else{
-      map.getSource("reroutes").setData(rerouteFC);
-    }
-    if(!map.getLayer("reroutes-green")){
-      map.addLayer({
-        id:"reroutes-green", type:"line", source:"reroutes",
-        layout:{ "line-cap":"round", "line-join":"round"},
-        paint:{ "line-color":"#00d08a", "line-opacity":0.85, "line-width":4.0 }
-      });
-    }
-  }catch(e){
-    debugSet(`ensureRoadLayers: ${e.message}`);
+  if(!map.getLayer("routes-base")){
+    // halo to improve legibility
+    map.addLayer({
+      id:"routes-halo", type:"line", source:"routes",
+      paint:{ "line-color":"#9fb4ff", "line-opacity":0.22, "line-width":7.5 },
+      layout:{ "line-cap":"round", "line-join":"round" }
+    });
+    // white base
+    map.addLayer({
+      id:"routes-base", type:"line", source:"routes",
+      paint:{ "line-color":"#ffffff", "line-opacity":0.9, "line-width":3.0 },
+      layout:{ "line-cap":"round", "line-join":"round" }
+    });
   }
+
+  // red highlight (current disruption)
+  if(!map.getSource("alert")) map.addSource("alert",{type:"geojson",data:{type:"FeatureCollection",features:[]}});
+  if(!map.getLayer("alert-red")){
+    map.addLayer({
+      id:"alert-red", type:"line", source:"alert",
+      paint:{ "line-color":"#ff6b6b", "line-opacity":0.95, "line-width":4.2 },
+      layout:{ "line-cap":"round", "line-join":"round" }
+    });
+  }
+
+  // green fix layer
+  if(!map.getSource("fix")) map.addSource("fix",{type:"geojson",data:{type:"FeatureCollection",features:[]}});
+  if(!map.getLayer("fix-green")){
+    map.addLayer({
+      id:"fix-green", type:"line", source:"fix",
+      paint:{ "line-color":"#00d08a", "line-opacity":0.95, "line-width":4.6 },
+      layout:{ "line-cap":"round", "line-join":"round" }
+    });
+  }
+}
+function featureForRoute(ids){
+  return { type:"Feature",
+    properties:{ id: ids.join("-") },
+    geometry:{ type:"LineString", coordinates: toLonLat(expandIDsToLatLon(ids)) }
+  };
+}
+function setSourceFC(srcId, features){
+  const fc = {type:"FeatureCollection", features: features||[]};
+  const src = map.getSource(srcId); if(src) src.setData(fc);
 }
 
 /* -------------------- warehouses (icon + label) -------------------- */
@@ -169,11 +188,10 @@ WH_IMG.onload=()=>{ WH_READY=true; };
 WH_IMG.onerror=()=>{ WH_READY=false; debugSet("warehouse_iso.png missing at root"); };
 WH_IMG.src = `${WAREHOUSE_ICON_SRC}?v=${Date.now()}`;
 
-const WH_BASE=34, WH_MIN=22, WH_MAX=50;
+const WH_BASE=30, WH_MIN=18, WH_MAX=42;
 const sizeByZoom = z => Math.max(WH_MIN, Math.min(WH_MAX, WH_BASE*(0.9 + (z-5)*0.18)));
 function drawWarehouses(){
-  if(!ctx) return;
-  const z=map.getZoom();
+  if(!ctx) return; const z=map.getZoom();
   ctx.font="bold 11px system-ui, Segoe UI, Roboto, sans-serif";
   for(const id of Object.keys(CITY)){
     const c=CITY[id], p=map.project({lng:c.lon, lat:c.lat}), S=sizeByZoom(z);
@@ -185,8 +203,8 @@ function drawWarehouses(){
 }
 
 /* -------------------- trucks -------------------- */
-const trucks=[];
-const SPEED_MULTIPLIER=9.5, MIN_GAP_PX=50, CROSS_GAP_PX=34, LANES_PER_ROUTE=3, LANE_WIDTH_PX=6.5, MIN_STEP=0.010;
+const trucks=[]; const truckNumberById=new Map();
+const SPEED_MULTIPLIER=9.2, MIN_GAP_PX=50, CROSS_GAP_PX=34, LANES_PER_ROUTE=3, LANE_WIDTH_PX=6.5, MIN_STEP=0.010;
 
 function defaultPathIDs(o,d){
   const k1=keyFor(o,d), k2=keyFor(d,o);
@@ -194,12 +212,11 @@ function defaultPathIDs(o,d){
   return (o!=="WH4"&&d!=="WH4") ? [o,"WH4",d] : [o,d];
 }
 function hashStr(s){ let h=0; for(let i=0;i<s.length;i++){ h=((h<<5)-h)+s.charCodeAt(i); h|=0;} return Math.abs(h); }
+function segProject(pt){ return map.project({lng:pt[1], lat:pt[0]}); }
 
-function spawnTruck(tr, reroutes){
+function spawnTruck(tr, idx){
   const delayed=(tr.status||"").toLowerCase()==="delayed" || (tr.delay_hours||0)>0;
-  let ids = reroutes.get(tr.id) || defaultPathIDs(tr.origin,tr.destination);
-  if(ids[0]!==tr.origin) ids.unshift(tr.origin);
-  if(ids[ids.length-1]!==tr.destination) ids.push(tr.destination);
+  const ids = defaultPathIDs(tr.origin,tr.destination);
   const latlon=expandIDsToLatLon(ids); if(latlon.length<2) return;
 
   const startT=Math.random()*0.55;
@@ -209,10 +226,9 @@ function spawnTruck(tr, reroutes){
   const laneIndex=((hashStr(tr.id)%LANES_PER_ROUTE)+LANES_PER_ROUTE)%LANES_PER_ROUTE;
 
   trucks.push({ id:tr.id, latlon, seg:0, t:startT, dir:1, speed, delayed, laneIndex, startAt:performance.now()+startDelay });
+  truckNumberById.set(tr.id, idx+1);
 }
-function segProject(pt){ return map.project({lng:pt[1], lat:pt[0]}); }
-
-function drawVectorTruck(g,w,h,delayed){
+function drawVectorTruck(g,w,h,delayed,number){
   const trW=w*0.78,trH=h*0.72;
   g.fillStyle="rgba(0,0,0,0.25)"; g.beginPath(); g.ellipse(0,trH*0.35,trW*0.9,trH*0.42,0,0,Math.PI*2); g.fill();
   const grad=g.createLinearGradient(-trW/2,0,trW/2,0); grad.addColorStop(0,"#eef2f6"); grad.addColorStop(1,"#cfd7df");
@@ -220,10 +236,17 @@ function drawVectorTruck(g,w,h,delayed){
   const cw=w*0.34,ch=h*0.72,cg=g.createLinearGradient(-cw/2,0,cw/2,0); cg.addColorStop(0,"#b3bcc6"); cg.addColorStop(1,"#9aa5b2");
   g.fillStyle=cg; g.strokeStyle="#5f6771"; g.beginPath(); g.roundRect(-w/2,-ch/2,cw,ch,3); g.fill(); g.stroke();
   g.fillStyle="#26303a"; g.fillRect(-w/2+2,-ch*0.44,cw-4,ch*0.32);
+
+  // small number badge
+  const R=7; g.fillStyle="#ffffff"; g.strokeStyle="#20262e"; g.lineWidth=1.2;
+  g.beginPath(); g.arc(trW*0.18,-trH*0.2,R,0,Math.PI*2); g.fill(); g.stroke();
+  g.fillStyle="#111"; g.font="bold 9px system-ui"; g.textAlign="center"; g.textBaseline="middle";
+  g.fillText(String(number), trW*0.18, -trH*0.2);
+
   g.fillStyle=delayed?"#ff3b30":"#00c853"; g.beginPath(); g.arc(trW*0.32,-trH*0.28,3.2,0,Math.PI*2); g.fill();
 }
 
-/* animation step */
+/* animation */
 let __lastTS=performance.now(), __dt=1/60;
 function drawFrame(){
   if(!ctx) return;
@@ -268,13 +291,14 @@ function drawFrame(){
     const x=x1+(nx/nL)*off, y=y1+(ny/nL)*off;
 
     const z=map.getZoom(), scale=1.0+(z-4)*0.12, w=28*scale, h=14*scale;
-    ctx.save(); ctx.translate(x,y); ctx.rotate(theta); drawVectorTruck(ctx,w,h,T.delayed); ctx.restore();
+    const num=truckNumberById.get(T.id)||0;
+    ctx.save(); ctx.translate(x,y); ctx.rotate(theta); drawVectorTruck(ctx,w,h,T.delayed,num); ctx.restore();
   }
 
   drawWarehouses();
 }
 
-/* -------------------- narration -------------------- */
+/* -------------------- narration (concise) -------------------- */
 const synth = window.speechSynthesis;
 let VOICE = null;
 function pickVoice(){
@@ -289,77 +313,115 @@ if(!VOICE && synth) synth.onvoiceschanged = ()=>{ VOICE = pickVoice(); };
 let ttsTimers=[];
 function clearTTS(){ ttsTimers.forEach(clearTimeout); ttsTimers=[]; try{synth?.cancel?.();}catch(e){} }
 function speakOnce(text){ if(!synth||!text) return; const u=new SpeechSynthesisUtterance(String(text)); if(VOICE) u.voice=VOICE; u.rate=1.02; u.pitch=1.02; u.volume=1; synth.speak(u); }
-function speakQueue(lines,gap=350){
+function speakQueue(lines,gap=300){
   clearTTS(); let t=0;
   lines.forEach(line=>{
-    const dur=Math.max(1400,44*line.length);
+    const dur=Math.max(1100,38*line.length);
     ttsTimers.push(setTimeout(()=>speakOnce(line),t));
     t+=dur+gap;
   });
 }
-function narrationFor(data,mode){
-  const trucks=data.trucks||[]; const delayed=trucks.filter(t=>(t.status||"").toLowerCase()==="delayed"||(t.delay_hours||0)>0).length;
-  const lines=[];
-  lines.push(mode==="after" ? "After correction. Green corridors show active reroutes." : "Before disruption. Baseline flows across the network.");
-  lines.push(`${trucks.length} trucks in motion, ${delayed} delayed.`);
-  if(mode==="after" && Array.isArray(data.reroutes) && data.reroutes.length) lines.push(`Reroutes applied: ${data.reroutes.length}.`);
-  lines.push("Monitoring inventory risk and ETA recovery while the network clears.");
-  return lines;
-}
 
-/* -------------------- scenario loader -------------------- */
-async function fetchOrDefault(file, fallback, label){
+/* -------------------- scenario + stats -------------------- */
+async function fetchOrDefault(file, fallback){
   try{
     const url=`${file}${file.includes("?")?"&":"?"}v=${Date.now()}`;
     const res=await fetch(url,{cache:"no-store"});
     if(!res.ok) throw new Error(`HTTP ${res.status}`);
-    const j=await res.json();
-    debugSet(`Loaded ${file}`);
-    return j;
-  }catch(err){
-    debugSet(`${label}: default (${err.message})`);
-    return fallback;
-  }
+    return await res.json();
+  }catch(err){ debugSet(`Using default: ${err.message}`); return fallback; }
 }
 
-window.loadScenario = async function(file, label){
-  try{
-    trucks.length=0; clearTTS();
-    const isAfter = /after/i.test(file) || /after/i.test(label||"");
-    const data = await fetchOrDefault(file, isAfter?DEFAULT_AFTER:DEFAULT_BEFORE, isAfter?"After":"Before");
+function updateStats(data){
+  const tbody=document.querySelector("#statsTable tbody");
+  tbody.innerHTML="";
+  const inCount={}, outCount={};
+  (data.trucks||[]).forEach(t=>{
+    outCount[t.origin]=(outCount[t.origin]||0)+1;
+    inCount[t.destination]=(inCount[t.destination]||0)+1;
+  });
+  (data.warehouses||[]).forEach(w=>{
+    const tr=document.createElement("tr");
+    const inV=inCount[w.id]||0, outV=outCount[w.id]||0;
+    tr.innerHTML=`<td>${CITY[w.id]?.name||w.id}</td>
+                  <td>${w.inventory ?? "-"}</td>
+                  <td class="pos">+${inV}</td>
+                  <td class="neg">-${outV}</td>`;
+    tbody.appendChild(tr);
+  });
+}
 
-    const reroutes=new Map(); const rerouteFeatures=[];
-    if(Array.isArray(data.reroutes)){
-      for(const r of data.reroutes){
-        if(r.truckId && Array.isArray(r.path) && r.path.length>=2){
-          reroutes.set(r.truckId, r.path.slice());
-          rerouteFeatures.push({type:"Feature",properties:{truckId:r.truckId},geometry:{type:"LineString",coordinates:toLonLat(expandIDsToLatLon(r.path))}});
-        }
-      }
-    }
-    const rerouteFC={type:"FeatureCollection",features:rerouteFeatures};
-    // ensure (or update) red & green layers
-    ensureRoadLayers(rerouteFC);
+/* -------------------- disruption stepper -------------------- */
+let stepIndex=0, advanceTimer=null;
 
-    for(const tr of (data.trucks||[])) spawnTruck(tr, reroutes);
+function fcFor(ids){ return {type:"FeatureCollection",features:[featureForRoute(ids)]}; }
+function clearTimer(){ if(advanceTimer) { clearTimeout(advanceTimer); advanceTimer=null; } }
 
-    // camera & narration
-    const b=new maplibregl.LngLatBounds(); Object.values(CITY).forEach(c=>b.extend([c.lon,c.lat]));
-    map.fitBounds(b,{padding:{top:60,left:60,right:60,bottom:60},duration:800,maxZoom:6.8});
-    speakQueue(narrationFor(data,isAfter?"after":"before"),350);
-  }catch(err){
-    debugSet(`loadScenario: ${err.message}`); speakQueue([`Scenario load error: ${err.message}`]);
-  }
-};
+function showBeforeStep(){
+  clearTimer(); clearTTS();
+  const step = STEPS[stepIndex]; if(!step){ finishShow(); return; }
+  // red the current route, clear green
+  setSourceFC("alert",[featureForRoute(step.route)]);
+  setSourceFC("fix",[]);
+  speakQueue([step.ask]);
+  // auto-advance in 6s to next disruption (without green if user doesn't click)
+  advanceTimer=setTimeout(()=>{ whiteOutCurrentThenNext(); }, 6000);
+}
+function whiteOutCurrentThenNext(){
+  // Clear red and move to next step
+  setSourceFC("alert",[]);
+  stepIndex++;
+  if(stepIndex>=STEPS.length){ finishShow(); return; }
+  showBeforeStep();
+}
+function applyAfterForCurrent(){
+  clearTimer(); clearTTS();
+  const step = STEPS[stepIndex]; if(!step){ finishShow(); return; }
+  // flip to green
+  setSourceFC("alert",[]);
+  setSourceFC("fix",[featureForRoute(step.route)]);
+  speakQueue(["Fix applied. Corridor clear and reroute successful."]);
+  // after 3s, clear green and move to next red step
+  advanceTimer=setTimeout(()=>{
+    setSourceFC("fix",[]);
+    stepIndex++;
+    if(stepIndex>=STEPS.length){ finishShow(); return; }
+    showBeforeStep();
+  }, 3000);
+}
+function finishShow(){
+  clearTimer(); clearTTS();
+  setSourceFC("alert",[]); setSourceFC("fix",[]);
+  speakQueue(["All disruptions processed. Network stable."]);
+}
 
 /* -------------------- boot -------------------- */
-map.on("load", ()=>{
-  ensureCanvas();
-  ensureRoadLayers({type:"FeatureCollection",features:[]}); // base corridors always on
-  loadScenario("scenario_before.json","Before Disruption"); // will fall back if missing
-});
+const mapReady = new Promise(res => map.on("load", res));
+(async function start(){
+  await mapReady;
+  ensureCanvas(); ensureRoadLayers();
+
+  const data = await fetchOrDefault("scenario_before.json", DEFAULT_BEFORE);
+  updateStats(data);
+
+  // place trucks
+  trucks.length=0; truckNumberById.clear();
+  (data.trucks||[]).forEach((t,i)=> spawnTruck(t,i));
+
+  // camera
+  const b=new maplibregl.LngLatBounds(); Object.values(CITY).forEach(c=>b.extend([c.lon,c.lat]));
+  map.fitBounds(b,{padding:{top:60,left:60,right:320,bottom:60},duration:800,maxZoom:6.8});
+
+  // kick off stepper
+  stepIndex=0; showBeforeStep();
+})();
+
 function tick(){
   const now=performance.now(); const dt=Math.min(0.05,(now-__lastTS)/1000); __lastTS=now; __dt=dt;
   drawFrame(); requestAnimationFrame(tick);
 }
 requestAnimationFrame(tick);
+
+/* -------------------- UI -------------------- */
+document.getElementById("btnBefore").addEventListener("click", ()=> showBeforeStep());
+document.getElementById("btnAfter").addEventListener("click",  ()=> applyAfterForCurrent());
