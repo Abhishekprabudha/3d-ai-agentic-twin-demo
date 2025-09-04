@@ -1,21 +1,14 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"/>
+  <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Agentic Twin — Satellite + Hillshade + Trucks</title>
-
-  <!-- MapLibre GL -->
-  <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet"/>
-  <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
-
+  <title>3D AI Agentic Twin Demo</title>
   <style>
-    :root { color-scheme: dark; }
-    html, body { height: 100%; margin: 0; background:#0a0a0b; color:#e6e6e6; font-family: system-ui, Segoe UI, Roboto, sans-serif; }
-    #map { position: absolute; inset: 0; }
-    #trucksCanvas { position:absolute; inset:0; pointer-events:none; }
+    html, body { margin: 0; height: 100%; background: #0a0a0b; color: #e6e6e6; font-family: system-ui, Segoe UI, Roboto, sans-serif; }
+    #map { position: fixed; inset: 0; }
+    #trucksCanvas { position: fixed; inset: 0; pointer-events: none; }
 
-    /* Top buttons */
     #buttons { position: fixed; top: 12px; left: 12px; display: flex; gap: 8px; z-index: 20; }
     #buttons button {
       background: #111318; color: #e6e6e6; border: 1px solid #2a2a2a;
@@ -23,27 +16,53 @@
     }
     #buttons button:hover { background: #191b22; }
 
-    /* Commentary panel */
+    /* Commentary (hidden by script unless you switch it back on) */
     #commentary {
-      position: fixed; right: 12px; top: 12px; width: 420px; max-height: 76vh; overflow: auto;
-      background: #0b0b0c; color: #e6e6e6; border: 1px solid #2a2a2a; padding: 12px; border-radius: 12px; z-index: 20;
+      position: fixed; right: 12px; top: 12px; width: 420px; max-height: 70vh; overflow: auto;
+      background: rgba(9,10,12,0.92); color: #e6e6e6; border: 1px solid #2a2a2a; padding: 12px; border-radius: 10px; z-index: 19;
     }
-    #commentary h3 { margin: 0 0 6px 0; font-size: 16px; }
+    #commentary h3 { margin: 0 0 6px 0; font-size: 14px; }
     #commentary pre { white-space: pre-wrap; margin: 0; font-size: 12px; line-height: 1.45; }
 
-    .attribution {
-      position: fixed; left: 12px; bottom: 8px; font-size: 11px; color: #a9b1bb; z-index: 10;
-      background: rgba(0,0,0,0.4); padding: 4px 8px; border-radius: 6px;
+    /* Tooltip for warehouse hover */
+    #tooltip {
+      position: fixed; z-index: 30; pointer-events: none;
+      background: rgba(10,12,16,0.95); border: 1px solid #2a2a2a; border-radius: 10px;
+      padding: 10px 12px; font-size: 12px; color:#e6e6e6; box-shadow: 0 6px 18px rgba(0,0,0,.35);
+      transform: translate(-50%, calc(-100% - 14px)); display: none;
+    }
+    #tooltip .h { font-weight: 600; margin-bottom: 4px; font-size: 13px; }
+    #tooltip .row { display:flex; gap:8px; margin-top:2px; }
+    #tooltip .k { opacity:.75; min-width:92px; }
+    #tooltip .v { font-weight:600; }
+
+    /* Timeline scrubber */
+    #timeline {
+      position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+      width: min(840px, 72vw); z-index: 22; user-select: none;
+      background: rgba(10,12,16,0.92); border: 1px solid #2a2a2a; border-radius: 12px; padding: 10px 12px;
+      display:flex; align-items:center; gap: 10px;
+    }
+    #tlPlay, #tlSpeed {
+      background: #111318; color:#e6e6e6; border:1px solid #2a2a2a; border-radius: 10px; padding: 6px 10px; cursor:pointer;
+    }
+    #tlPlay:hover, #tlSpeed:hover { background:#191b22; }
+    #barWrap { position:relative; flex: 1 1 auto; height: 10px; border-radius: 10px; background:#12151b; overflow:hidden; cursor:pointer; }
+    #barProg { position:absolute; left:0; top:0; height:100%; background: linear-gradient(90deg,#66e2ff 0%,#4ad6ff 100%); width:0%; }
+    .marker {
+      position:absolute; top:-2px; width:8px; height:14px; border-radius:2px; background:#ffd54a; box-shadow:0 0 0 1px #2a2a2a;
     }
   </style>
+
+  <link href="https://cdn.jsdelivr.net/npm/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet">
 </head>
 <body>
   <div id="map"></div>
   <canvas id="trucksCanvas"></canvas>
 
   <div id="buttons">
-    <button onclick="loadScenario('scenario_before.json')">Before Disruption</button>
-    <button onclick="loadScenario('scenario_after.json')">After Correction</button>
+    <button onclick="loadScenario('scenario_before.json','Before Disruption')">Before Disruption</button>
+    <button onclick="loadScenario('scenario_after.json','After Correction')">After Correction</button>
   </div>
 
   <div id="commentary" aria-live="polite">
@@ -51,11 +70,24 @@
     <pre id="commentaryLog"></pre>
   </div>
 
-  <div class="attribution">
-    © OpenStreetMap contributors • © MapTiler • © CARTO
+  <!-- Tooltip -->
+  <div id="tooltip">
+    <div class="h" id="tipTitle"></div>
+    <div class="row"><div class="k">Inventory</div><div class="v" id="tipInv">–</div></div>
+    <div class="row"><div class="k">Inbound (delayed)</div><div class="v" id="tipIn">–</div></div>
+    <div class="row"><div class="k">Outbound</div><div class="v" id="tipOut">–</div></div>
   </div>
 
-  <script src="script.js"></script>
+  <!-- Timeline scrubber -->
+  <div id="timeline">
+    <button id="tlPlay">▶︎ Play</button>
+    <button id="tlSpeed">1×</button>
+    <div id="barWrap"><div id="barProg"></div></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+  <script src="script.js?v=wow-timeline-1"></script>
+
   <noscript>Please enable JavaScript to view the demo.</noscript>
 </body>
 </html>
