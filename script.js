@@ -1,14 +1,15 @@
 /* ============================================================
-   Agentic Twin — WOW pass #1
-   - Motion dashes on highways/corridors
-   - Warehouse status rings + hover tooltip
-   - Timeline scrubber (play/pause/speed + markers)
+   Agentic Twin — Focus + Continuous Motion + Sharp Warehouse
+   - Auto fit map to all warehouses on load & scenario change
+   - Prevent truck freeze with a minimum motion step
+   - Draw a crisp SVG warehouse icon (file or embedded fallback)
+   - Keeps the earlier “wow #1” features (motion routes, timeline)
    ============================================================ */
 
 /* ---------- Map config ---------- */
 const STYLE_URL = "style.json";                    // your MapLibre/MapTiler style
 const MAP_INIT   = { center:[78.9629,21.5937], zoom:5.0, minZoom:3, maxZoom:12 };
-const SHOW_TEXT_LOG = false;                       // we now speak narration only
+const SHOW_TEXT_LOG = false;                       // narration only, no text panel
 
 /* ---------- DOM grabs ---------- */
 const logEl = document.getElementById("commentaryLog");
@@ -30,7 +31,8 @@ const tl = {
   t0: 0,
   playing: false,
   speed: 1,
-  spokenIdx: -1
+  spokenIdx: -1,
+  progressMs: 0
 };
 
 /* ---------- Base data ---------- */
@@ -42,7 +44,7 @@ const CITY = {
   WH5:{ name:"WH5 — Kolkata",    lat:22.5726, lon:88.3639 }
 };
 
-// Densified corridor samples (lat,lon) — quick, readable “highway-ish” lines.
+// Densified corridor samples (lat,lon) — readable “highway-ish” lines.
 const RP = {
   "WH1-WH2":[[28.6139,77.2090],[27.0,76.8],[25.6,75.2],[24.1,73.5],[23.0,72.6],[21.17,72.83],[19.9,72.9],[19.076,72.8777]],
   "WH2-WH3":[[19.0760,72.8777],[18.52,73.8567],[16.9,74.5],[15.9,74.5],[13.8,76.4],[12.9716,77.5946]],
@@ -129,14 +131,14 @@ function addVTroads(){
       "line-color":"#00ffd0",
       "line-width":["interpolate",["linear"],["zoom"],4,1.2,6,1.4,8,1.8,10,2.2,12,2.6],
       "line-opacity":0.9,
-      "line-dasharray":[0.5, 2.5]   // will be animated
+      "line-dasharray":[0.5, 2.5]
     }
   });
 
   // Animate dash phase
   let phase=0;
   function tickDash(){
-    phase = (phase + 0.12) % 3.0; // tune speed
+    phase = (phase + 0.12) % 3.0;
     try { map.setPaintProperty("routes-motion","line-dasharray",[0.5+phase, 2.5]); } catch(e){}
     requestAnimationFrame(tickDash);
   }
@@ -144,57 +146,55 @@ function addVTroads(){
 }
 
 /* ---------- Warehouse rendering & tooltip ---------- */
-const USE_VECTOR_WAREHOUSE = true;
-const WAREHOUSE_BASE_PX=90, WAREHOUSE_MIN_PX=52, WAREHOUSE_MAX_PX=140;
+const WAREHOUSE_ICON_SRC = "assets/warehouse.svg"; // place your crisp SVG here
+const EMBEDDED_SVG = `
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'>
+  <defs>
+    <linearGradient id='g1' x1='0' y1='0' x2='0' y2='1'>
+      <stop offset='0' stop-color='#0f1720'/>
+      <stop offset='1' stop-color='#0a0f15'/>
+    </linearGradient>
+    <linearGradient id='g2' x1='0' y1='0' x2='0' y2='1'>
+      <stop offset='0' stop-color='#ffd44a'/>
+      <stop offset='1' stop-color='#e8b90e'/>
+    </linearGradient>
+  </defs>
+  <rect x='6' y='6' width='84' height='84' rx='18' fill='url(#g1)' stroke='#66e2ff' stroke-opacity='.5'/>
+  <rect x='18' y='30' width='60' height='34' rx='6' fill='url(#g2)' stroke='#41464d'/>
+  <rect x='18' y='58' width='60' height='10' fill='#213a2b'/>
+  <rect x='30' y='42' width='36' height='18' rx='3' fill='#6f7780'/>
+  <rect x='30' y='56' width='36' height='7' rx='2' fill='#3f464f'/>
+  <rect x='40' y='22' width='16' height='8' rx='2' fill='#cfd7df' stroke='#7b848f'/>
+  <rect x='28' y='22' width='16' height='8' rx='2' fill='#e3e9f1' stroke='#7b848f'/>
+  <rect x='52' y='22' width='16' height='8' rx='2' fill='#e3e9f1' stroke='#7b848f'/>
+</svg>`.trim();
+
+let WH_IMG = new Image();
+let WH_READY = false;
+function loadWarehouseIcon(){
+  WH_IMG.onload = ()=>{ WH_READY = true; };
+  WH_IMG.onerror = ()=>{
+    // Fallback to embedded SVG
+    WH_IMG = new Image();
+    WH_IMG.onload = ()=>{ WH_READY = true; };
+    WH_IMG.src = "data:image/svg+xml;utf8," + encodeURIComponent(EMBEDDED_SVG);
+  };
+  WH_IMG.src = WAREHOUSE_ICON_SRC;
+}
+loadWarehouseIcon();
+
+const WAREHOUSE_BASE_PX=96, WAREHOUSE_MIN_PX=56, WAREHOUSE_MAX_PX=150;
 const warehouseSizeByZoom = z => Math.max(WAREHOUSE_MIN_PX, Math.min(WAREHOUSE_MAX_PX, WAREHOUSE_BASE_PX*(0.9+(z-5)*0.28)));
 
 const WAREHOUSE_STATE = new Map();   // id -> {inventory, in, inDelayed, out}
 let scenarioTrucks = [];             // last loaded trucks (raw JSON)
 
-function drawWarehouseIcon(ctx,x,y,S){  // yellow/green, pseudo-3D (from our earlier pass)
-  const snap=v=>Math.round(v)+0.5; ctx.save(); ctx.translate(Math.round(x)+0.5,Math.round(y)+0.5);
-  const r=S/2, depth=Math.max(10,S*0.20), bw=S*0.78, bh=S*0.54, padR=12;
-  ctx.fillStyle="rgba(0,0,0,0.26)"; ctx.beginPath(); ctx.ellipse(0,r*0.56,r*0.92,r*0.38,0,0,Math.PI*2); ctx.fill();
-  const padGr=ctx.createLinearGradient(0,-r,0,r); padGr.addColorStop(0,"#131920"); padGr.addColorStop(1,"#0b0f15");
-  ctx.fillStyle=padGr; ctx.strokeStyle="rgba(80,220,255,0.45)"; ctx.lineWidth=1.6;
-  ctx.beginPath(); ctx.roundRect(snap(-r),snap(-r),S,S,padR); ctx.fill(); ctx.stroke();
-  const bodyTop="#f2c500", bodyBot="#e3b600";
-  const faceX=snap(-bw/2), faceY=snap(-bh/2);
-  const grd=ctx.createLinearGradient(0,faceY,0,faceY+bh); grd.addColorStop(0,bodyTop); grd.addColorStop(1,bodyBot);
-  ctx.fillStyle=grd; ctx.strokeStyle="#5e5d57"; ctx.lineWidth=1.4; ctx.beginPath(); ctx.roundRect(faceX,faceY,bw,bh,6); ctx.fill(); ctx.stroke();
-  const bandH=bh*0.22; const bandY=faceY+bh*0.40; ctx.fillStyle="#147a4b"; ctx.fillRect(faceX+2, bandY, bw-4, bandH);
-  ctx.fillStyle="#26303a"; ctx.fillRect(faceX+2, faceY+bh-8, bw-4, 8);
-  ctx.fillStyle="#f5f8fb"; ctx.strokeStyle="#9099a5"; ctx.beginPath();
-  ctx.moveTo(faceX, faceY); ctx.lineTo(faceX+bw, faceY); ctx.lineTo(faceX+bw-depth, faceY-depth); ctx.lineTo(faceX+depth, faceY-depth);
-  ctx.closePath(); ctx.fill(); ctx.stroke();
-  ctx.strokeStyle="#b6c0cb"; ctx.lineWidth=1;
-  for(let i=1;i<=6;i++){ const t=i/7, x1=faceX+depth*(1-t), x2=faceX+bw-depth*t, yy=faceY-depth*t; ctx.beginPath(); ctx.moveTo(snap(x1),snap(yy)); ctx.lineTo(snap(x2),snap(yy)); ctx.stroke(); }
-  const skW=bw*0.16, skH=depth*0.66, skY=faceY-depth+skH/2+1;
-  const skyl=cx=>{ ctx.fillStyle="#eaf2ff"; ctx.strokeStyle="rgba(0,0,0,0.25)"; ctx.lineWidth=1; ctx.beginPath(); ctx.roundRect(snap(cx-skW/2),snap(skY-skH/2),skW,skH,3); ctx.fill(); ctx.stroke(); };
-  skyl(-bw*0.24); skyl(+bw*0.24);
-  const unitW=skW*0.72, unitH=skH*0.80, uY=skY-skH*1.10;
-  const hv=cx=>{ ctx.fillStyle="#d2d7dd"; ctx.strokeStyle="#808891"; ctx.beginPath(); ctx.roundRect(snap(cx-unitW/2),snap(uY-unitH/2),unitW,unitH,4); ctx.fill(); ctx.stroke();
-    ctx.strokeStyle="#7c848d"; for(let k=1;k<=3;k++){ const yy=uY-unitH/2+6+k*(unitH/3.2); ctx.beginPath(); ctx.moveTo(snap(cx-unitW/2+6),snap(yy)); ctx.lineTo(snap(cx+unitW/2-6),snap(yy)); ctx.stroke(); } };
-  hv(-bw*0.08); hv(+bw*0.08);
-  // Dock + shutter
-  const shW=bw*0.48, shH=bh*0.38, shY=faceY+bh*0.12; ctx.fillStyle="#6f7780";
-  ctx.beginPath(); ctx.roundRect(snap(-shW/2),snap(shY),shW,shH,4); ctx.fill();
-  ctx.strokeStyle="#525a63"; ctx.lineWidth=1; for(let i=1;i<6;i++){ const yy=shY+(i/6)*shH; ctx.beginPath(); ctx.moveTo(snap(-shW/2+6),snap(yy)); ctx.lineTo(snap(shW/2-6),snap(yy)); ctx.stroke(); }
-  ctx.fillStyle="#3f464f"; ctx.fillRect(snap(-shW/2+5),snap(shY+shH*0.60),shW-10,shH*0.38);
-  // Ramp chevrons + bollards
-  const rampH=shH*0.26, ry=shY+shH+8; for(let i=-shW/2+8;i<shW/2-8;i+=16){ ctx.fillStyle=(Math.floor(i/16)%2===0)?"#ffd44a":"#1e2329"; ctx.beginPath(); ctx.moveTo(snap(i),snap(ry)); ctx.lineTo(snap(i+16),snap(ry)); ctx.lineTo(snap(i),snap(ry+rampH)); ctx.closePath(); ctx.fill(); }
-  ctx.fillStyle="#ffc93c"; const by1=shY+shH-6, by2=by1+rampH*0.9; [-1,1].forEach(s=>{ const bx=s*(shW/2+12); ctx.fillRect(snap(bx-2),snap(by1),4,by2-by1); ctx.fillStyle="#33383f"; ctx.fillRect(snap(bx-1),snap(by1+6),2,by2-by1-12); ctx.fillStyle="#ffc93c"; });
-  ctx.restore();
-}
-
-// health ring
 function drawStatusRing(ctx, x, y, S, pct){
   const r = S*0.66;
   const th = Math.max(4, S*0.08);
   const ang = Math.max(0, Math.min(1, pct)) * Math.PI*2;
   const color = pct>=0.8 ? "#27e38a" : (pct>=0.55 ? "#ffd54a" : "#ff5252");
 
-  // back track
   ctx.save();
   ctx.globalAlpha = 0.15;
   ctx.strokeStyle = "#ffffff";
@@ -202,7 +202,6 @@ function drawStatusRing(ctx, x, y, S, pct){
   ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.stroke();
   ctx.restore();
 
-  // active arc
   ctx.save();
   ctx.strokeStyle = color;
   ctx.shadowColor = color;
@@ -214,11 +213,12 @@ function drawStatusRing(ctx, x, y, S, pct){
 }
 
 /* ---------- Trucks (fast, offset, spacing) ---------- */
-const SPEED_MULTIPLIER = 8.0;  // very zippy
+const SPEED_MULTIPLIER = 9.5;   // slightly faster
 const MIN_GAP_PX = 50;
 const CROSS_GAP_PX = 34;
 const LANES_PER_ROUTE = 3;
 const LANE_WIDTH_PX   = 6.5;
+const MIN_STEP = 0.0025;        // <-- prevents slowdowns from ever freezing
 
 const trucks=[];
 function defaultPathIDs(o,d){ if(o===d) return [o]; const k1=keyFor(o,d),k2=keyFor(d,o); if(RP[k1]||RP[k2]) return [o,d]; return (o!=="WH4" && d!=="WH4") ? [o,"WH4",d] : [o,d]; }
@@ -234,7 +234,7 @@ function spawnTruck(tr, reroutes){
   const startT=Math.random()*0.55;
   const base = delayed?2.88:4.32;
   const speed=base*(0.92+Math.random()*0.16);
-  const startDelay=700+Math.random()*1200;
+  const startDelay=400+Math.random()*900;
   const laneIndex=((hashStr(tr.id)%LANES_PER_ROUTE)+LANES_PER_ROUTE)%LANES_PER_ROUTE;
   trucks.push({ id:tr.id, latlon, seg:0, t:startT, dir:1, speed, delayed, laneIndex, startAt:performance.now()+startDelay });
 }
@@ -266,7 +266,7 @@ function drawTrucks(){
     const aP=map.project({lng:a[1],lat:a[0]}), bP=map.project({lng:b[1],lat:b[0]});
     const segLenPx=Math.max(1,Math.hypot(bP.x-aP.x,bP.y-aP.y));
     let pxPerSec=SPEED_MULTIPLIER*T.speed*(0.9+(map.getZoom()-4)*0.12);
-    const dT=(pxPerSec*(1/60))/segLenPx;
+    let step = (pxPerSec*(1/60))/segLenPx;
 
     // Headway on same segment
     const myProg=T.t*segLenPx; let minLead=Infinity;
@@ -279,15 +279,19 @@ function drawTrucks(){
         if(oProg>myProg) minLead=Math.min(minLead,oProg-myProg);
       }
     }
-    let step=dT; if(isFinite(minLead)&&minLead<MIN_GAP_PX) step*=Math.max(0.2,(minLead/MIN_GAP_PX)*0.6);
+    if(isFinite(minLead)&&minLead<MIN_GAP_PX) step*=Math.max(0.2,(minLead/MIN_GAP_PX)*0.6);
 
     // Crossing gap
     const {x:cx,y:cy}=truckScreenPos(T); let nearest=Infinity;
     for(const O of trucks){ if(O===T||now<O.startAt) continue; const p=truckScreenPos(O); const d=Math.hypot(p.x-cx,p.y-cy); if(d<nearest) nearest=d; }
     if(isFinite(nearest)&&nearest<CROSS_GAP_PX) step*=Math.max(0.25,(nearest/CROSS_GAP_PX)*0.6);
 
+    // Never freeze
+    step = Math.max(step, MIN_STEP);
+
     // Integrate
-    T.t+=step; if(T.t>=1){ T.seg+=T.dir; T.t-=1; if(T.seg<=0){T.seg=0;T.dir=1;} else if(T.seg>=T.latlon.length-1){T.seg=T.latlon.length-1;T.dir=-1;} }
+    T.t+=step; 
+    if(T.t>=1){ T.seg+=T.dir; T.t-=1; if(T.seg<=0){T.seg=0;T.dir=1;} else if(T.seg>=T.latlon.length-1){T.seg=T.latlon.length-1;T.dir=-1;} }
 
     // Draw
     const theta=Math.atan2(bP.y-aP.y,bP.x-aP.x);
@@ -310,7 +314,16 @@ function drawWarehousesAndRings(){
     const c=CITY[id];
     const p=map.project({lng:c.lon,lat:c.lat});
     const S=warehouseSizeByZoom(z);
-    drawWarehouseIcon(tctx,p.x,p.y,S);
+
+    // ICON (sharp SVG)
+    const size = S;
+    if(WH_READY){
+      tctx.drawImage(WH_IMG, Math.round(p.x-size/2), Math.round(p.y-size/2), size, size);
+    } else {
+      // If still loading, draw a simple placeholder dot
+      tctx.fillStyle="#1de0ff";
+      tctx.beginPath(); tctx.arc(p.x, p.y, Math.max(8, S*0.2), 0, Math.PI*2); tctx.fill();
+    }
 
     // status ring
     const st = WAREHOUSE_STATE.get(id);
@@ -354,17 +367,16 @@ map.on("mousemove", (e)=>{
 
 /* ---------- Timeline scrubber ---------- */
 function buildTimeline(items){
-  // Clear old markers
   tl.items = (Array.isArray(items) ? items.slice() : []);
   tl.totalMs = tl.items.reduce((acc,it)=>acc + (Number(it.delay_ms)||0), 0);
-  tl.t0 = 0; tl.playing=false; tl.speed=1; tl.spokenIdx=-1;
+  tl.t0 = 0; tl.playing=false; tl.speed=1; tl.spokenIdx=-1; tl.progressMs=0;
   tl.speedBtn.textContent = "1×";
   tl.play.textContent = "▶︎ Play";
   tl.barProg.style.width = "0%";
-  // markers
   tl.markers.forEach(m=>m.remove()); tl.markers.length=0;
+
   let t=0;
-  tl.items.forEach((it,idx)=>{
+  tl.items.forEach((it)=>{
     const ms = Number(it.delay_ms)||0; t+=ms;
     const x = Math.max(0, Math.min(100, (t / Math.max(1, tl.totalMs))*100));
     const m = document.createElement("div"); m.className="marker"; m.style.left = `calc(${x}% - 4px)`;
@@ -372,7 +384,6 @@ function buildTimeline(items){
     tl.barWrap.appendChild(m); tl.markers.push(m);
   });
 }
-
 function tlNow(){ return (performance.now() - tl.t0) * tl.speed; }
 function tlPlay(){ if(tl.playing) return; tl.playing=true; tl.t0 = performance.now() - (tl.progressMs||0)/tl.speed; requestAnimationFrame(tlTick); tl.play.textContent="⏸ Pause"; }
 function tlPause(){ tl.playing=false; tl.progressMs = tlNow(); tl.play.textContent="▶︎ Play"; }
@@ -383,7 +394,6 @@ function tlTick(){
   tl.progressMs = ms;
   tl.barProg.style.width = `${(ms/Math.max(1,tl.totalMs))*100}%`;
 
-  // Speak milestones
   let acc=0;
   for(let i=0;i<tl.items.length;i++){
     acc += Number(tl.items[i].delay_ms)||0;
@@ -401,7 +411,6 @@ tl.speedBtn.addEventListener("click", ()=>{
   tl.speedBtn.textContent = `${tl.speed}×`;
   if(tl.playing){ tl.t0 = performance.now() - tl.progressMs/tl.speed; }
 });
-// click seek
 tl.barWrap.addEventListener("click", (ev)=>{
   if(!tl.totalMs) return;
   const rect = tl.barWrap.getBoundingClientRect();
@@ -451,14 +460,36 @@ window.loadScenario = async function(file, humanLabel){
     tlReset();
     const say = humanLabel || (/after/i.test(file) ? "After Correction" : "Before Disruption");
     ttsEnq(say);
+
+    // Focus on warehouses (keeps first view sharp & centered)
+    fitToWarehouses();
+
   }catch(err){
     console.error(err);
     ttsEnq(`Scenario load error: ${err.message}`);
   }
 };
 
+/* ---------- Fit map to all warehouses (focus fix) ---------- */
+function fitToWarehouses(){
+  const bounds = new maplibregl.LngLatBounds();
+  Object.values(CITY).forEach(c => bounds.extend([c.lon, c.lat]));
+  // Pad for top label + bottom timeline + right control
+  map.fitBounds(bounds, {
+    padding: { top: 60, left: 60, right: 60, bottom: 160 },
+    duration: 900,
+    maxZoom: 6.8
+  });
+}
+
 /* ---------- Boot ---------- */
-map.on("load", ()=>{ resizeCanvas(); addVTroads(); loadScenario("scenario_before.json","Before Disruption"); });
+map.on("load", ()=>{ 
+  resizeCanvas(); 
+  addVTroads(); 
+  loadScenario("scenario_before.json","Before Disruption"); 
+  // Ensure first paint focused even before scenario arrives
+  fitToWarehouses();
+});
 map.on("render", drawTrucks);
 map.on("resize", resizeCanvas);
 
